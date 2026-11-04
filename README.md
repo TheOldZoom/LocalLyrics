@@ -12,7 +12,7 @@ Install Android SDK 36 and JDK 17, then run:
 
 Install `app/build/outputs/apk/debug/app-debug.apk` on a device running Android 8.0 or newer.
 
-GitHub Actions also builds a debug APK on each push or pull request. You can start it manually from **Actions → Build Android APK → Run workflow** and download the `lyrics-debug-apk` artifact from the run.
+GitHub Actions builds a debug APK on each push or pull request. A successful push to `master` also creates a GitHub Release automatically with the APK attached. You can run the workflow manually on `master` from **Actions → Build Android APK → Run workflow**; it creates the same release for that commit. Releases use commit-based tags, so you do not need to choose a version. The APK is signed with Android's debug key, not a production key.
 
 ## Use
 

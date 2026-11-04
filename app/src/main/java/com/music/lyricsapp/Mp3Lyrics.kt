@@ -40,9 +40,10 @@ object Mp3Lyrics {
         require(old != null || (bytes.size >= 2 && (bytes[0].toInt() and 255) == 0xff &&
             (bytes[1].toInt() and 0xe0) == 0xe0)) { "Invalid MP3 file" }
         val version = old?.version ?: 3
+        // TagLib exposes every USLT frame as a LYRICS value. An older frame in
+        // another language could otherwise win PixelPlayer's first-valid pick.
         val kept = old?.frames.orEmpty().filterNot { frame ->
-            String(frame, 0, 4, Charsets.ISO_8859_1) == "USLT" &&
-                frame.size >= 14 && String(frame, 11, 3, Charsets.US_ASCII) == "eng"
+            String(frame, 0, 4, Charsets.ISO_8859_1) == "USLT"
         }
         val content = ByteArrayOutputStream().apply {
             if (version == 4) {

@@ -37,3 +37,33 @@ jobs:
           name: lyrics-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+
+  release:
+    if: github.ref == 'refs/heads/master' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download built APK
+        uses: actions/download-artifact@v8
+        with:
+          name: lyrics-debug-apk
+          path: release
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          test -f release/app-debug.apk
+          TAG="build-${GITHUB_SHA:0:12}"
+          asset="release/LocalLyrics-${TAG}-debug.apk"
+          mv release/app-debug.apk "$asset"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$asset" --clobber
+          else
+            gh release create "$TAG" "$asset" --target "$GITHUB_SHA" \
+              --title "Build ${GITHUB_SHA:0:12}" --generate-notes \
+              --notes "Debug APK signed with Android's debug key."
+          fi

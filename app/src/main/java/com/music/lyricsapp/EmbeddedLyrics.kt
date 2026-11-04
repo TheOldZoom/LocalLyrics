@@ -117,11 +117,16 @@ object EmbeddedLyrics {
      * just produced, without a device or a `Context` in the way — the round
      * trip is the only thing that proves a reader and a writer agree.
      */
-    internal fun fromBytes(head: ByteArray): String? {
+    internal fun fromBytes(head: ByteArray): String? = fromBytes(head, standardOnly = false)
+
+    /** The portable field exposed as `LYRICS` by TagLib, which PixelPlayer reads. */
+    internal fun fromBytesStandard(head: ByteArray): String? = fromBytes(head, standardOnly = true)
+
+    private fun fromBytes(head: ByteArray, standardOnly: Boolean): String? {
         val found = when {
-            head.startsWith(FLAC_MAGIC) -> flac(head)
-            head.startsWith(MATROSKA_MAGIC) -> matroska(head)
-            head.isMp4() -> mp4(head)
+            head.startsWith(FLAC_MAGIC) -> flac(head, standardOnly)
+            head.startsWith(MATROSKA_MAGIC) -> matroska(head, standardOnly)
+            head.isMp4() -> mp4(head, standardOnly)
             else -> null
         }
         return found?.takeIf { it.isNotBlank() }
@@ -144,13 +149,13 @@ object EmbeddedLyrics {
      * often enough that scanning the whole thing would eventually read a frame
      * as a tag. Inside `moov` the same pattern is a tag or it is nothing.
      */
-    private fun mp4(bytes: ByteArray): String? {
+    private fun mp4(bytes: ByteArray, standardOnly: Boolean): String? {
         val moov = topLevelBox(bytes, "moov") ?: return null
         // Exclusive, and deliberately so: the lyrics are the last item written
         // into `ilst`, so their value ends exactly on `moov`'s own end — an
         // inclusive bound here rejects the one atom this is looking for.
         val end = moov.last + 1
-        return ilstText(bytes, moov.first, end, freeform = true)
+        return (if (standardOnly) null else ilstText(bytes, moov.first, end, freeform = true))
             ?: ilstText(bytes, moov.first, end, freeform = false)
     }
 
@@ -229,7 +234,7 @@ object EmbeddedLyrics {
      * Every length in the block is **little-endian** — it reuses Ogg Vorbis'
      * layout, which is the one part of FLAC that isn't big-endian.
      */
-    private fun flac(bytes: ByteArray): String? {
+    private fun flac(bytes: ByteArray, standardOnly: Boolean): String? {
         var pos = FLAC_MAGIC.size
         while (pos + 4 <= bytes.size) {
             val flags = bytes[pos].toInt() and 0xFF
@@ -239,7 +244,7 @@ object EmbeddedLyrics {
             val start = pos + 4
             if (start + length > bytes.size) return null
             if (flags and 0x7F == FLAC_VORBIS_COMMENT) {
-                return vorbisComment(bytes, start, start + length)
+                return vorbisComment(bytes, start, start + length, standardOnly)
             }
             if (flags and 0x80 != 0) return null
             pos = start + length
@@ -247,7 +252,7 @@ object EmbeddedLyrics {
         return null
     }
 
-    private fun vorbisComment(bytes: ByteArray, start: Int, end: Int): String? {
+    private fun vorbisComment(bytes: ByteArray, start: Int, end: Int, standardOnly: Boolean): String? {
         var pos = start
         fun u32(): Int? {
             if (pos + 4 > end) return null
@@ -269,7 +274,7 @@ object EmbeddedLyrics {
             val value = entry.substringAfter('=', "")
             // This app's own field wins outright; the standard one is held in
             // case it turns out to be the only one there.
-            if (name == WORD_LYRICS_FIELD && value.isNotBlank()) return value
+            if (!standardOnly && name == WORD_LYRICS_FIELD && value.isNotBlank()) return value
             if (name == "LYRICS" && plain == null && value.isNotBlank()) plain = value
         }
         return plain
@@ -287,9 +292,9 @@ object EmbeddedLyrics {
      * `TagName` element and the value read out of the `TagString` that follows,
      * so this is looking at tag structure rather than guessing at loose bytes.
      */
-    private fun matroska(bytes: ByteArray): String? {
+    private fun matroska(bytes: ByteArray, standardOnly: Boolean): String? {
         var plain: String? = null
-        for (name in listOf(WORD_LYRICS_FIELD, "LYRICS")) {
+        for (name in if (standardOnly) listOf("LYRICS") else listOf(WORD_LYRICS_FIELD, "LYRICS")) {
             val needle = name.toByteArray(Charsets.US_ASCII)
             var from = 0
             while (true) {

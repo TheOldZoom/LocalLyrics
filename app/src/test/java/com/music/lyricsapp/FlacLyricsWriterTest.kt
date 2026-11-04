@@ -1,6 +1,8 @@
 package com.music.lyricsapp
 
 import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.ByteArrayOutputStream
@@ -23,6 +25,26 @@ class FlacLyricsWriterTest {
             assertTrue(!String(bytes, Charsets.ISO_8859_1).contains("LYRICS=Old lyrics"))
             assertArrayEquals(audio, bytes.takeLast(audio.size).toByteArray())
             assertTrue(String(input.readBytes(), Charsets.ISO_8859_1).contains("LYRICS=Old lyrics"))
+        } finally { input.delete(); output.delete() }
+    }
+
+    @Test fun standardLyricsDoNotComeFromPrivateWordTimingField() {
+        val input = File.createTempFile("lyrics-original-", ".flac")
+        val output = File.createTempFile("lyrics-result-", ".flac")
+        try {
+            input.writeBytes("fLaC".toByteArray() + block(0, ByteArray(34), false) +
+                block(4, comments("TITLE=Keep this"), true))
+            val plain = "[00:01.00]New lyrics"
+            val enhanced = "[00:01.00]<00:01.10>New <00:01.40>lyrics"
+            FlacLyricsWriter.write(input, output, plain, enhanced)
+            val tagged = output.readBytes()
+            assertEquals(plain, EmbeddedLyrics.fromBytesStandard(tagged))
+            assertEquals(enhanced, EmbeddedLyrics.fromBytes(tagged))
+
+            val privateOnly = "fLaC".toByteArray() + block(0, ByteArray(34), false) +
+                block(4, comments("BITCHORD_LYRICS=$enhanced"), true)
+            assertNull(EmbeddedLyrics.fromBytesStandard(privateOnly))
+            assertEquals(enhanced, EmbeddedLyrics.fromBytes(privateOnly))
         } finally { input.delete(); output.delete() }
     }
 

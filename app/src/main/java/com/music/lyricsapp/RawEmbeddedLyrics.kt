@@ -2,12 +2,11 @@ package com.music.lyricsapp
 
 import android.content.Context
 import android.net.Uri
-import com.music.lyricsapp.EmbeddedLyrics
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 
-/** Reads the container field itself, including plain lyrics without LRC stamps. */
+/** Reads the standard container field exposed by TagLib as `LYRICS`, including text without LRC stamps. */
 object RawEmbeddedLyrics {
     suspend fun read(context: Context, uri: Uri, extension: String): String? = withContext(Dispatchers.IO) {
         val limit = if (extension == "flac" || extension == "mp3") 8 * 1024 * 1024 else 68 * 1024 * 1024
@@ -21,7 +20,7 @@ object RawEmbeddedLyrics {
             }
             runCatching {
                 if (extension == "mp3") Mp3Lyrics.read(out.toByteArray())
-                else EmbeddedLyrics.fromBytes(out.toByteArray())
+                else EmbeddedLyrics.fromBytesStandard(out.toByteArray())
             }.getOrNull()
         }
     }
