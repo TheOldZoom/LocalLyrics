@@ -53,7 +53,7 @@ object LibrarySettings {
             PeriodicWorkRequestBuilder<LibraryWorker>(15, TimeUnit.MINUTES).setConstraints(constraints).build())
     }
     fun scanNow(context: Context) {
-        WorkManager.getInstance(context).enqueueUniqueWork("lyrics_scan_now", ExistingWorkPolicy.KEEP,
+        WorkManager.getInstance(context).enqueueUniqueWork("lyrics_scan_now", ExistingWorkPolicy.REPLACE,
             OneTimeWorkRequestBuilder<LibraryWorker>().build())
     }
 }

@@ -10,19 +10,23 @@ data class LocalTrack(
     val album: String, val durationMs: Long, val signature: String,
     val status: String, val source: String, val proposed: String,
     val enhanced: String, val existing: String, val error: String,
+    val review: String = "",
 )
 
-class LyricStore(context: Context) : SQLiteOpenHelper(context, "lyrics.db", null, 1) {
+class LyricStore(context: Context) : SQLiteOpenHelper(context, "lyrics.db", null, 2) {
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("""CREATE TABLE tracks (
             uri TEXT PRIMARY KEY, name TEXT NOT NULL, title TEXT NOT NULL,
             artist TEXT NOT NULL, album TEXT NOT NULL, duration_ms INTEGER NOT NULL,
             signature TEXT NOT NULL, status TEXT NOT NULL, source TEXT NOT NULL DEFAULT '',
             proposed TEXT NOT NULL DEFAULT '', enhanced TEXT NOT NULL DEFAULT '',
-            existing TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT ''
+            existing TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '',
+            review TEXT NOT NULL DEFAULT ''
         )""")
     }
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        if (oldVersion < 2) db.execSQL("ALTER TABLE tracks ADD COLUMN review TEXT NOT NULL DEFAULT ''")
+    }
 
     @Synchronized fun scanned(track: LocalTrack): Boolean {
         val old = get(track.uri)
@@ -32,7 +36,7 @@ class LyricStore(context: Context) : SQLiteOpenHelper(context, "lyrics.db", null
             put("artist", track.artist); put("album", track.album); put("duration_ms", track.durationMs)
             put("signature", track.signature); put("status", track.status)
             put("source", ""); put("proposed", ""); put("enhanced", "")
-            put("existing", track.existing); put("error", track.error)
+            put("existing", track.existing); put("error", track.error); put("review", track.review)
         }
         writableDatabase.insertWithOnConflict("tracks", null, row, SQLiteDatabase.CONFLICT_REPLACE)
         return true
@@ -49,7 +53,14 @@ class LyricStore(context: Context) : SQLiteOpenHelper(context, "lyrics.db", null
         writableDatabase.update("tracks", ContentValues().apply {
             put("title", title.trim()); put("artist", artist.trim())
             put("status", "new"); put("error", "")
+            put("source", ""); put("proposed", ""); put("enhanced", ""); put("review", "")
         }, "uri=?", arrayOf(uri))
+    }
+
+    @Synchronized fun setReview(uri: String, review: String) {
+        require(review == "correct" || review == "wrong" || review.isEmpty())
+        writableDatabase.update("tracks", ContentValues().apply { put("review", review) },
+            "uri=?", arrayOf(uri))
     }
 
     @Synchronized fun get(uri: String): LocalTrack? = readableDatabase.query(
@@ -86,5 +97,6 @@ class LyricStore(context: Context) : SQLiteOpenHelper(context, "lyrics.db", null
         enhanced = getString(getColumnIndexOrThrow("enhanced")),
         existing = getString(getColumnIndexOrThrow("existing")),
         error = getString(getColumnIndexOrThrow("error")),
+        review = getString(getColumnIndexOrThrow("review")),
     )
 }
