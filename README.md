@@ -16,7 +16,7 @@ GitHub Actions builds a debug APK on each push or pull request. A successful pus
 
 ## Use
 
-Choose a music folder with Android's folder picker. Lyrics scans it immediately and checks for new files periodically. Files without embedded lyrics are fetched and tagged automatically by default. You can turn automatic writing off under **Sources**, review results, export LRC or plain text, edit a title or artist, retry a match, and write a result manually. Existing embedded lyrics are preserved unless you deliberately retry and replace them.
+Choose a music folder with Android's folder picker. Lyrics scans it immediately and checks for new files periodically. Files without embedded lyrics are fetched and tagged automatically by default. You can turn automatic writing off under **Sources**, review results, export LRC or plain text, edit a title or artist, retry a match, and write a result manually. Open a file with existing embedded lyrics to export them as LRC or plain text. Existing embedded lyrics are preserved unless you deliberately retry and replace them.
 
 MP3, FLAC, M4A, and WebM can be tagged. Other audio files appear as unsupported. The MP3, M4A, and WebM writers hold files in memory and limit input to 64 MiB. FLAC is streamed. A tagged file is written and verified before the original is replaced. If a folder provider cannot rename files, the tagged copy remains alongside the original. The app needs continuing access to the chosen folder, so keep its Android document permission.
 

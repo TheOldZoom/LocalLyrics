@@ -8,30 +8,34 @@ object Mp3Lyrics {
 
     fun read(bytes: ByteArray): String? {
         val tag = parse(bytes) ?: return null
+        var otherLanguage: String? = null
         for (frame in tag.frames) {
             if (String(frame, 0, 4, Charsets.ISO_8859_1) != "USLT") continue
             val payload = frame.copyOfRange(10, frame.size)
             if (payload.size < 6) continue
             val encoding = payload[0].toInt() and 255
             val language = String(payload, 1, 3, Charsets.US_ASCII)
-            if (language != "eng") continue
             val text = when (encoding) {
-                3 -> {
+                0, 3 -> {
                     val end = payload.indexOf(0, 4)
                     if (end < 0) continue
-                    String(payload, end + 1, payload.size - end - 1, Charsets.UTF_8)
+                    String(payload, end + 1, payload.size - end - 1,
+                        if (encoding == 0) Charsets.ISO_8859_1 else Charsets.UTF_8)
                 }
-                1 -> {
+                1, 2 -> {
                     var end = 4
                     while (end + 1 < payload.size && !(payload[end] == 0.toByte() && payload[end + 1] == 0.toByte())) end += 2
                     if (end + 1 >= payload.size) continue
-                    String(payload, end + 2, payload.size - end - 2, Charsets.UTF_16)
+                    String(payload, end + 2, payload.size - end - 2,
+                        if (encoding == 1) Charsets.UTF_16 else Charsets.UTF_16BE)
                 }
                 else -> continue
             }
-            if (text.isNotBlank()) return text
+            if (text.isBlank()) continue
+            if (language == "eng") return text
+            if (otherLanguage == null) otherLanguage = text
         }
-        return null
+        return otherLanguage
     }
 
     fun write(bytes: ByteArray, lyrics: String): ByteArray {

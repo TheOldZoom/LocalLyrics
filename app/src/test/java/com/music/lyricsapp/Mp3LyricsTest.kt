@@ -26,11 +26,23 @@ class Mp3LyricsTest {
         // The USLT frame starts after the 10-byte ID3 header; its three-byte
         // language code follows the 10-byte frame header and encoding byte.
         "spa".toByteArray(Charsets.US_ASCII).copyInto(old, 21)
+        assertEquals("Old lyrics", Mp3Lyrics.read(old))
         val updated = Mp3Lyrics.write(old, "New lyrics")
         assertEquals("New lyrics", Mp3Lyrics.read(updated))
         val marker = "USLT".toByteArray(Charsets.US_ASCII)
         assertEquals(1, updated.indices.count { at ->
             at + marker.size <= updated.size && marker.indices.all { updated[at + it] == marker[it] }
         })
+    }
+
+    @Test fun readsExistingLatin1Lyrics() {
+        val lyrics = "Café lyrics"
+        val content = byteArrayOf(0) + "spa".toByteArray(Charsets.US_ASCII) + byteArrayOf(0) +
+            lyrics.toByteArray(Charsets.ISO_8859_1)
+        val frame = "USLT".toByteArray(Charsets.US_ASCII) +
+            byteArrayOf(0, 0, 0, content.size.toByte(), 0, 0) + content
+        val tag = "ID3".toByteArray(Charsets.US_ASCII) +
+            byteArrayOf(3, 0, 0, 0, 0, 0, frame.size.toByte()) + frame
+        assertEquals(lyrics, Mp3Lyrics.read(tag))
     }
 }

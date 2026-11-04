@@ -73,6 +73,7 @@ private fun LyricsScreen() {
                 } ?: error("Could not create the lyrics file")
                 message = "Lyrics exported"
             } catch (e: Exception) { message = e.message ?: "Could not export lyrics" }
+            selected = null
         }
     }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri: Uri? ->
@@ -122,6 +123,25 @@ private fun LyricsScreen() {
     selected?.let { track ->
         var matchTitle by remember(track.uri) { mutableStateOf(track.title) }
         var matchArtist by remember(track.uri) { mutableStateOf(track.artist) }
+        var exportError by remember(track.uri) { mutableStateOf("") }
+        val exportEmbedded: (Boolean) -> Unit = { asText ->
+            scope.launch {
+                try {
+                    exportError = ""
+                    val extension = track.name.substringAfterLast('.', "").lowercase()
+                    val embedded = RawEmbeddedLyrics.read(context, Uri.parse(track.uri), extension)
+                        ?.takeIf { it.isNotBlank() }
+                        ?: error("No embedded lyrics remain in this file; scan the folder again")
+                    val timed = LrcLib.parseLrc(embedded).isNotEmpty()
+                    exportPayload = if (asText) lyricsAsText(embedded) else embedded
+                    val fileType = if (asText || !timed) "txt" else "lrc"
+                    val fileName = track.name.substringBeforeLast('.', track.name)
+                    exportPicker.launch("$fileName.$fileType")
+                } catch (e: Exception) {
+                    exportError = e.message ?: "Could not export embedded lyrics"
+                }
+            }
+        }
         AlertDialog(onDismissRequest = { if (!applying) selected = null },
             title = { Text(track.title) },
             text = {
@@ -134,25 +154,31 @@ private fun LyricsScreen() {
                     if (track.existing.isNotBlank()) {
                         Spacer(Modifier.height(10.dp)); Text("Existing lyrics", fontWeight = FontWeight.Bold)
                         Text(track.existing)
-                    }
-                    val timing = when {
-                        track.enhanced.isNotBlank() -> "word timed"
-                        track.proposed.contains(Regex("\\[\\d+:\\d+")) -> "line timed"
-                        else -> "plain"
-                    }
-                    Spacer(Modifier.height(10.dp)); Text("Found from ${track.source.ifBlank { "—" }} · $timing", fontWeight = FontWeight.Bold)
-                    Text(track.proposed.ifBlank { track.error.ifBlank { "Lyrics are still being fetched." } })
-                    if (track.proposed.isNotBlank()) {
                         Row {
-                            TextButton(onClick = {
-                                exportPayload = track.proposed
-                                exportPicker.launch("${track.title}.lrc")
-                            }) { Text("Export LRC") }
-                            TextButton(onClick = {
-                                exportPayload = LrcLib.parseLrc(track.proposed).joinToString("\n") { it.text }
-                                    .ifBlank { track.proposed.replace(Regex("(?m)^\\[[^]]*]"), "") }
-                                exportPicker.launch("${track.title}.txt")
-                            }) { Text("Export text") }
+                            TextButton(onClick = { exportEmbedded(false) }) { Text("Export embedded") }
+                            TextButton(onClick = { exportEmbedded(true) }) { Text("Export text") }
+                        }
+                        if (exportError.isNotBlank()) Text(exportError, color = MaterialTheme.colorScheme.error)
+                    }
+                    if (track.proposed.isNotBlank() || track.existing.isBlank()) {
+                        val timing = when {
+                            track.enhanced.isNotBlank() -> "word timed"
+                            track.proposed.contains(Regex("\\[\\d+:\\d+")) -> "line timed"
+                            else -> "plain"
+                        }
+                        Spacer(Modifier.height(10.dp)); Text("Found from ${track.source.ifBlank { "—" }} · $timing", fontWeight = FontWeight.Bold)
+                        Text(track.proposed.ifBlank { track.error.ifBlank { "Lyrics are still being fetched." } })
+                        if (track.proposed.isNotBlank()) {
+                            Row {
+                                TextButton(onClick = {
+                                    exportPayload = track.proposed
+                                    exportPicker.launch("${track.title}.lrc")
+                                }) { Text("Export LRC") }
+                                TextButton(onClick = {
+                                    exportPayload = lyricsAsText(track.proposed)
+                                    exportPicker.launch("${track.title}.txt")
+                                }) { Text("Export text") }
+                            }
                         }
                     }
                 }
@@ -200,6 +226,11 @@ private fun LyricsScreen() {
 
     if (settings) SourceSettings(onClose = { settings = false })
 }
+
+/** Keep the original text when the metadata contains lyrics without LRC timestamps. */
+private fun lyricsAsText(raw: String): String =
+    LrcLib.parseLrc(raw).map { it.text }.filter { it.isNotBlank() }.joinToString("\n")
+        .ifBlank { raw }
 
 @Composable
 private fun SourceSettings(onClose: () -> Unit) {
