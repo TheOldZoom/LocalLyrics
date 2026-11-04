@@ -1,0 +1,31 @@
+# Gradle and Kotlin generated state
+.gradle/
+.kotlin/
+**/build/
+out/
+
+# Android SDK and IDE state
+local.properties
+.idea/
+*.iml
+*.ipr
+*.iws
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Generated packages and diagnostics
+*.apk
+*.aab
+*.ap_
+*.class
+*.dex
+*.hprof
+*.log
+
+# Local signing credentials
+*.keystore
+*.jks
+*.p12
+key.properties
+keystore.properties
