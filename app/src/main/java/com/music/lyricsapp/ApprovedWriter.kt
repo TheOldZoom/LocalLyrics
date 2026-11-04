@@ -13,7 +13,8 @@ import java.io.File
 import java.util.UUID
 
 object ApprovedWriter {
-    data class Outcome(val message: String, val uri: String, val signature: String, val replaced: Boolean)
+    data class Outcome(val message: String, val uri: String, val name: String,
+        val signature: String, val replaced: Boolean)
     /** Returns the actual outcome; a provider that cannot rename leaves a clearly named copy. */
     suspend fun apply(context: Context, track: LocalTrack): Outcome = withContext(Dispatchers.IO) {
         require(track.status == "ready" && track.proposed.isNotBlank()) { "No reviewed lyrics to write" }
@@ -68,20 +69,24 @@ object ApprovedWriter {
             val backupName = "${track.name}.lyrics-backup-${UUID.randomUUID()}"
             if (!original.renameTo(backupName)) return@withContext Outcome(
                 "Tagged copy saved as ${candidate.name}; original unchanged", candidate.uri.toString(),
-                "${candidate.length()}:${candidate.lastModified()}:${candidate.name}", false)
+                candidate.name ?: candidateName,
+                "${candidate.length()}:${candidate.lastModified()}:${candidate.name ?: candidateName}", false)
             if (!candidate.renameTo(track.name)) {
                 val restored = original.renameTo(track.name)
                 return@withContext Outcome(if (restored)
                     "Tagged copy saved as ${candidate.name}; original restored"
                 else "Tagged copy saved as ${candidate.name}; original remains at ${original.name}",
-                    candidate.uri.toString(), "${candidate.length()}:${candidate.lastModified()}:${candidate.name}", false)
+                    candidate.uri.toString(), candidate.name ?: candidateName,
+                    "${candidate.length()}:${candidate.lastModified()}:${candidate.name ?: candidateName}", false)
             }
             if (!original.delete()) {
                 return@withContext Outcome("Updated ${track.name}; backup retained as ${original.name}",
-                    candidate.uri.toString(), "${candidate.length()}:${candidate.lastModified()}:${candidate.name}", true)
+                    candidate.uri.toString(), candidate.name ?: track.name,
+                    "${candidate.length()}:${candidate.lastModified()}:${candidate.name ?: track.name}", true)
             }
             Outcome("Updated ${track.name}", candidate.uri.toString(),
-                "${candidate.length()}:${candidate.lastModified()}:${candidate.name}", true)
+                candidate.name ?: track.name,
+                "${candidate.length()}:${candidate.lastModified()}:${candidate.name ?: track.name}", true)
         } finally {
             input.delete(); tagged.delete()
         }

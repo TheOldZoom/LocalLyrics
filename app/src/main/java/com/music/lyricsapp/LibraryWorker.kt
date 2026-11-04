@@ -20,6 +20,9 @@ import com.music.lyricsapp.core.toEnhancedLrc
 import com.music.lyricsapp.core.toLrc
 import com.music.lyricsapp.core.YouTubeVideoLookup
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.TimeUnit
@@ -59,8 +62,9 @@ object LibrarySettings {
 }
 
 class LibraryWorker(context: Context, parameters: WorkerParameters) : CoroutineWorker(context, parameters) {
+    companion object { private val scanMutex = Mutex() }
     private data class AudioTags(val title: String, val artist: String, val album: String, val durationMs: Long)
-    override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
+    override suspend fun doWork(): Result = scanMutex.withLock { withContext(Dispatchers.IO) {
         val context = applicationContext
         val treeUri = LibrarySettings.folder(context).takeIf { it.isNotBlank() } ?: return@withContext Result.success()
         val root = DocumentFile.fromTreeUri(context, Uri.parse(treeUri)) ?: return@withContext Result.failure()
@@ -107,56 +111,107 @@ class LibraryWorker(context: Context, parameters: WorkerParameters) : CoroutineW
             if (capabilities?.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET) != true) {
                 return@withContext Result.retry()
             }
-            val pending = store.all().filter { it.status == "new" }
+            val sources = LibrarySettings.sources(context)
+            val pending = store.all().filter { track ->
+                track.name.substringAfterLast('.', "").lowercase() in setOf("mp3", "flac", "m4a", "webm") &&
+                    track.providerScan != lookupKey(track, sources)
+            }
             for (track in pending.take(15)) {
                 if (isStopped) break
+                val key = lookupKey(track, sources)
                 if (track.artist.isBlank()) {
                     store.update(track.uri, "error", error = "Artist missing from file tags; edit the file tags and rescan.")
+                    store.setProviderScan(track.uri, key)
                     continue
                 }
-                val sources = LibrarySettings.sources(context)
+                val previousCandidates = store.candidates(track.uri).associateBy { it.source }
+                val previousSelection = track.selectedProvider
+                store.clearCandidateLookup(track.uri)
                 val videoId = if (LyricsSource.YOUTUBE_MUSIC in sources ||
                     LyricsSource.YOUTUBE_TRANSCRIPT in sources) {
                     withTimeoutOrNull(5_000L) {
                         YouTubeVideoLookup.find(track.title, track.artist, track.durationMs)
                     }
                 } else null
-                val found = withTimeoutOrNull(30_000L) {
+                val found = withTimeoutOrNull(60_000L) {
                     LyricsRepository.lyrics(videoId ?: track.uri, track.title, track.artist, track.durationMs,
                         album = track.album.ifBlank { null }, sources = sources,
-                        order = LyricsSource.offered, prioritizeSyllableSync = true)
+                        order = LyricsSource.offered, prioritizeSyllableSync = true,
+                        collectAll = true,
+                        onSourceStarted = { source ->
+                            store.setCandidate(track.uri, ProviderCandidate(source, "fetching"))
+                        },
+                        onSourceResult = { source, result ->
+                            val plain = result?.lines?.toLrc().orEmpty()
+                            store.setCandidate(track.uri, if (plain.isNotBlank() && plain.length <= 64_000)
+                                ProviderCandidate(source, "found", plain, result!!.lines.toEnhancedLrc(),
+                                    previousCandidates[source]?.takeIf { it.plain == plain }?.review.orEmpty())
+                            else ProviderCandidate(source, "missing"))
+                        },
+                        onSourceFailure = { source, _ ->
+                            store.setCandidate(track.uri, ProviderCandidate(source, "error"))
+                        },
+                        onSourceCancelled = { source ->
+                            if (store.candidates(track.uri).firstOrNull { it.source == source }?.state == "fetching") {
+                                store.setCandidate(track.uri, ProviderCandidate(source, "timeout"))
+                            }
+                        })
                 }
-                val plain = found?.lines?.toLrc().orEmpty()
-                if (found != null && plain.isNotBlank() && plain.length <= 64_000) {
-                    val enhanced = found.lines.toEnhancedLrc()
-                    store.update(track.uri, "ready", found.source.label, plain, enhanced)
-                    if (LibrarySettings.autoAdd(context) && track.existing.isBlank()) {
+                store.setProviderScan(track.uri, key)
+                val candidates = store.candidates(track.uri)
+                val current = store.get(track.uri) ?: continue
+                val previousChoice = candidates.firstOrNull { candidate ->
+                    candidate.source.name == previousSelection && candidate.state == "found" &&
+                        previousCandidates[candidate.source]?.plain == candidate.plain
+                }
+                val userSelected = current.selectedProvider.isNotBlank() || previousChoice != null
+                val chosen = candidates.firstOrNull { it.source.name == current.selectedProvider && it.state == "found" }
+                    ?: previousChoice
+                    ?: candidates.firstOrNull { it.source == found?.source && it.state == "found" }
+                    ?: candidates.firstOrNull { it.state == "found" }
+                if (chosen != null) {
+                    val ready = if (current.selectedProvider.isNotBlank()) current
+                        else store.selectCandidate(track.uri, chosen.source)
+                    val plain = ready.proposed
+                    val enhanced = ready.enhanced
+                    if (!userSelected && ready.review != "wrong" &&
+                        LibrarySettings.autoAdd(context) && track.existing.isBlank()) {
                         try {
-                            val ready = track.copy(status = "ready", source = found.source.label,
-                                proposed = plain, enhanced = enhanced)
                             val outcome = ApprovedWriter.apply(context, ready)
-                            if (outcome.replaced) store.delete(track.uri)
-                            else store.update(track.uri, "ready", found.source.label, plain, enhanced,
+                            val savedCandidates = store.candidates(track.uri)
+                            if (!outcome.replaced) store.update(track.uri, "ready", ready.source, plain, enhanced,
                                 error = outcome.message)
-                            store.scanned(ready.copy(uri = outcome.uri, signature = outcome.signature,
+                            store.scanned(ready.copy(uri = outcome.uri, name = outcome.name,
+                                signature = outcome.signature,
                                 status = "applied", existing = plain))
-                            store.update(outcome.uri, "applied", found.source.label, plain, enhanced)
+                            savedCandidates.forEach { store.setCandidate(outcome.uri, it) }
+                            store.update(outcome.uri, "applied", ready.source, plain, enhanced)
+                            if (outcome.replaced) store.delete(track.uri)
                         } catch (e: Exception) {
-                            store.update(track.uri, "ready", found.source.label, plain, enhanced,
+                            if (e is CancellationException) throw e
+                            store.update(track.uri, "ready", ready.source, plain, enhanced,
                                 error = "Automatic write failed: ${e.message.orEmpty()}")
                         }
                     }
                 } else {
-                    store.update(track.uri, "miss", error = "No matching lyrics were found.")
+                    store.update(track.uri, if (track.existing.isBlank()) "miss" else "existing",
+                        error = "No selected provider found lyrics for this file.")
                 }
             }
             if (pending.size > 15 || isStopped) Result.retry() else Result.success()
         } catch (e: SecurityException) {
             Result.failure()
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Result.retry()
         } finally { store.close() }
-    }
+    } }
+
+    private fun lookupKey(track: LocalTrack, sources: Set<LyricsSource>): String = listOf(
+        track.title, track.artist, track.album, track.durationMs.toString(),
+        sources.map { it.name }.sorted().joinToString(","),
+    ).joinToString("") { "${it.length}:$it" }
 
     private fun metadata(context: Context, uri: Uri, name: String): AudioTags {
         val retriever = MediaMetadataRetriever()

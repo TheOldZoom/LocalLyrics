@@ -101,8 +101,12 @@ object LyricsRepository {
          * a cancelled race loser is deliberately not reported as one.
          */
         onSourceResult: ((LyricsSource, Result?) -> Unit)? = null,
+        /** A provider failed rather than returning no lyrics. */
+        onSourceFailure: ((LyricsSource, Exception) -> Unit)? = null,
         /** Lets callers turn a cancelled race loser back into "not fetched". */
         onSourceCancelled: ((LyricsSource) -> Unit)? = null,
+        /** Wait for every selected provider so callers can compare all returned versions. */
+        collectAll: Boolean = false,
     ): Result? = coroutineScope {
         val sequence = (order + LyricsSource.offered)
             .distinct()
@@ -129,7 +133,7 @@ object LyricsRepository {
         // Genius is a plain text web scraper. To preserve bandwidth and avoid rate-limiting,
         // it starts lazily and is only contacted if all higher-priority synced sources miss.
         val racing: List<Pair<LyricsSource, Deferred<Result?>>> = sequence.map { source ->
-            val startMode = if (source == LyricsSource.GENIUS) kotlinx.coroutines.CoroutineStart.LAZY else kotlinx.coroutines.CoroutineStart.DEFAULT
+            val startMode = if (!collectAll && source == LyricsSource.GENIUS) kotlinx.coroutines.CoroutineStart.LAZY else kotlinx.coroutines.CoroutineStart.DEFAULT
             source to async(Dispatchers.IO, start = startMode) {
                 onSourceStarted?.invoke(source)
                 try {
@@ -149,14 +153,21 @@ object LyricsRepository {
                 } catch (cancelled: CancellationException) {
                     onSourceCancelled?.invoke(source)
                     throw cancelled
-                } catch (_: Exception) {
-                    onSourceResult?.invoke(source, null)
+                } catch (failure: Exception) {
+                    if (onSourceFailure != null) onSourceFailure.invoke(source, failure)
+                    else onSourceResult?.invoke(source, null)
                     null
                 }
             }
         }
 
         try {
+            if (collectAll) {
+                val found = racing.mapNotNull { (_, job) -> job.await() }
+                return@coroutineScope found.firstOrNull { result -> result.lines.any { it.isWordSynced } }
+                    ?: found.firstOrNull { result -> result.lines.any { it.timeMs > 0 } }
+                    ?: found.firstOrNull()
+            }
             var lineSynced: Result? = null
             for ((source, job) in racing) {
                 // If we already found a line-synced or better result, skip Genius completely
