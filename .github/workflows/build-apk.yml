@@ -43,11 +43,13 @@ jobs:
           if-no-files-found: error
 
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     needs: build
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     steps:
-      - name: Check out release tag
+      - name: Check out release commit
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
@@ -72,7 +74,6 @@ jobs:
           LYRICS_KEY_ALIAS: ${{ secrets.LYRICS_KEY_ALIAS }}
           LYRICS_KEY_PASSWORD: ${{ secrets.LYRICS_KEY_PASSWORD }}
         run: |
-          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
           test -n "$LYRICS_KEYSTORE_BASE64"
           test -n "$LYRICS_KEYSTORE_PASSWORD"
           test -n "$LYRICS_KEY_ALIAS"
@@ -87,9 +88,16 @@ jobs:
           LYRICS_KEY_PASSWORD: ${{ secrets.LYRICS_KEY_PASSWORD }}
         run: ./gradlew --no-daemon :app:assembleRelease
 
-      - name: Stage signed APK for release review
-        uses: actions/upload-artifact@v7
-        with:
-          name: lyrics-signed-release-candidate
-          path: app/build/outputs/apk/release/app-release.apk
-          if-no-files-found: error
+      - name: Publish signed GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          test -f app/build/outputs/apk/release/app-release.apk
+          tag="build-${GITHUB_SHA:0:12}"
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" app/build/outputs/apk/release/app-release.apk \
+              --target "$GITHUB_SHA" \
+              --title "Lyrics ${tag}" \
+              --notes "Signed release APK built from commit ${GITHUB_SHA}."
+          fi

@@ -5,17 +5,18 @@ plugins {
     id("com.google.devtools.ksp")
 }
 
-val releaseTag = runCatching {
-    val process = ProcessBuilder("git", "describe", "--tags", "--abbrev=0", "--match", "v[0-9]*")
+fun gitValue(vararg arguments: String): String? = runCatching {
+    val process = ProcessBuilder("git", *arguments)
         .directory(rootDir).redirectErrorStream(true).start()
     val output = process.inputStream.bufferedReader().readText().trim()
-    if (process.waitFor() == 0) output.removePrefix("v") else null
+    if (process.waitFor() == 0) output else null
 }.getOrNull()
-val versionParts = releaseTag?.split('.')?.mapNotNull(String::toIntOrNull).orEmpty()
-val releaseVersionCode = if (versionParts.size == 3 && versionParts[0] in 0..1999 &&
-    versionParts[1] in 0..999 && versionParts[2] in 0..999) {
-    (versionParts[0] * 1_000_000 + versionParts[1] * 1_000 + versionParts[2]).coerceAtLeast(1)
-} else 1
+val releaseTag = gitValue("describe", "--tags", "--abbrev=0", "--match", "v[0-9]*")
+    ?.removePrefix("v") ?: "0.1.0"
+// Every push has a distinct APK and must have a higher version code than the
+// previous push. CI fetches full Git history so this count is stable there.
+val releaseVersionCode = gitValue("rev-list", "--count", "HEAD")?.toIntOrNull()
+    ?.coerceAtLeast(1) ?: 1
 val releaseStore = providers.environmentVariable("LYRICS_KEYSTORE_FILE").orNull
 val releaseStorePassword = providers.environmentVariable("LYRICS_KEYSTORE_PASSWORD").orNull
 val releaseAlias = providers.environmentVariable("LYRICS_KEY_ALIAS").orNull
@@ -31,7 +32,7 @@ android {
         minSdk = 26
         targetSdk = 36
         versionCode = releaseVersionCode
-        versionName = releaseTag ?: "0.1.0-dev"
+        versionName = "$releaseTag-build.$releaseVersionCode"
     }
     signingConfigs {
         if (hasReleaseSigning) create("release") {

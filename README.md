@@ -12,7 +12,9 @@ Install Android SDK 36 and JDK 17, then run:
 
 Install `app/build/outputs/apk/debug/app-debug.apk` on a device running Android 8.0 or newer.
 
-GitHub Actions builds a debug APK on pushes and pull requests. A `vMAJOR.MINOR.PATCH` tag is configured to build a minified signed APK for review using the `LYRICS_KEYSTORE_BASE64`, `LYRICS_KEYSTORE_PASSWORD`, `LYRICS_KEY_ALIAS`, and `LYRICS_KEY_PASSWORD` repository secrets; it does not publish a GitHub Release automatically. Gradle reads the latest version tag for `versionName` and `versionCode`; without a tag it uses a development version. Do not create a release tag until the file-safety checks in `docs/overhaul/manual-tests.md` and the outstanding automated checks are complete.
+GitHub Actions builds a debug APK on pushes and pull requests. Every push to `master` also builds a minified signed APK and publishes a GitHub Release tagged `build-<commit SHA>`. This requires the `LYRICS_KEYSTORE_BASE64`, `LYRICS_KEYSTORE_PASSWORD`, `LYRICS_KEY_ALIAS`, and `LYRICS_KEY_PASSWORD` repository secrets; the release job fails if they are missing. Keep the signing key backed up outside the repository. Gradle uses the nearest `vMAJOR.MINOR.PATCH` tag in the version name and the full-history Git commit count as the increasing Android version code. The release automation does not run the file-safety tests that remain prohibited by the current maintainer instruction; review `docs/overhaul/manual-tests.md` before pushing to `master`.
+
+Set the four secrets under **Repository Settings → Secrets and variables → Actions** before the first release push. `LYRICS_KEYSTORE_BASE64` is the Base64 encoding of the release keystore file; the other values are its store password, key alias, and key password. Keep the original keystore and passwords backed up so later APKs can update earlier ones. Existing debug-signed installs use a different certificate and cannot be updated in place by the signed release APK.
 
 ## Use
 
