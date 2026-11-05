@@ -1,5 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="timing_no_offset">Timing: on time (0 ms)</string>
+    <string name="timing_earlier_ms">Timing: %1$d ms earlier</string>
+    <string name="timing_later_ms">Timing: %1$d ms later</string>
+    <string name="timing_slider_label">Lyric timing offset</string>
+    <string name="timing_minus_100">−100 ms</string>
+    <string name="timing_reset">Reset</string>
+    <string name="timing_plus_100">+100 ms</string>
+    <string name="timing_no_timestamps">These lyrics have no timestamps to shift.</string>
+    <string name="timing_preview">Timing preview</string>
     <string name="filter_all">All</string>
     <string name="filter_to_review">To review</string>
     <string name="filter_correct">Correct</string>
@@ -61,7 +70,6 @@
     <string name="edit_proposed_lyrics">Edit proposed lyrics</string>
     <string name="changes_stay_in_the_app_until_you_choose_to_writ">Changes stay in the app until you choose to write the file.</string>
     <string name="lyrics_plain_text_or_lrc">Lyrics (plain text or LRC)</string>
-    <string name="sync_offset_in_milliseconds_later_earlier">Sync offset in milliseconds (+ later, − earlier)</string>
     <string name="save_proposal">Save proposal</string>
     <string name="choose_providers">Choose providers</string>
     <string name="fetch_again">Fetch again</string>

@@ -54,6 +54,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -78,6 +81,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.math.abs
+import kotlin.math.roundToInt
 
 @Composable
 internal fun TrackDetail(
@@ -111,7 +116,7 @@ internal fun TrackDetail(
     var matchArtist by remember(track.uri) { mutableStateOf(track.artist) }
     var showEditor by remember(track.uri) { mutableStateOf(false) }
     var editedText by remember(track.uri) { mutableStateOf("") }
-    var offsetText by remember(track.uri) { mutableStateOf("0") }
+    var offsetMs by remember(track.uri) { mutableStateOf(0) }
     var embeddedEnhanced by remember(track.uri) { mutableStateOf("") }
     LaunchedEffect(track.uri, track.existing) {
         if (track.existing.isNotBlank()) {
@@ -160,7 +165,7 @@ internal fun TrackDetail(
                     enhanced = track.enhanced, player = player)
                 OutlinedButton(onClick = {
                     editedText = track.proposed
-                    offsetText = "0"
+                    offsetMs = 0
                     showEditor = true
                 }, enabled = !applying && !reviewing) { Text(stringResource(R.string.edit_lyrics_or_timing)) }
                 if (track.status != "dismissed") {
@@ -233,34 +238,67 @@ internal fun TrackDetail(
         }
     }
     if (showEditor) {
-        val offset = offsetText.toIntOrNull()
+        val previewLines = remember(editedText) {
+            editedText.lineSequence().filter(LyricTiming::hasTimestamps).take(3).joinToString("\n")
+        }
+        val offsetLabel = when {
+            offsetMs < 0 -> stringResource(R.string.timing_earlier_ms, abs(offsetMs))
+            offsetMs > 0 -> stringResource(R.string.timing_later_ms, offsetMs)
+            else -> stringResource(R.string.timing_no_offset)
+        }
+        val sliderDescription = stringResource(R.string.timing_slider_label)
         AlertDialog(
             onDismissRequest = { showEditor = false },
             title = { Text(stringResource(R.string.edit_proposed_lyrics)) },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(Modifier.heightIn(max = 470.dp).verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(stringResource(R.string.changes_stay_in_the_app_until_you_choose_to_writ))
                     OutlinedTextField(
                         value = editedText, onValueChange = { editedText = it },
                         label = { Text(stringResource(R.string.lyrics_plain_text_or_lrc)) },
-                        modifier = Modifier.fillMaxWidth().heightIn(min = 180.dp, max = 330.dp),
-                        maxLines = 16,
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 140.dp, max = 220.dp),
+                        maxLines = 10,
                     )
-                    OutlinedTextField(
-                        value = offsetText, onValueChange = { offsetText = it },
-                        label = { Text(stringResource(R.string.sync_offset_in_milliseconds_later_earlier)) },
-                        singleLine = true,
+                    Text(offsetLabel, style = MaterialTheme.typography.titleSmall)
+                    Slider(
+                        value = offsetMs.toFloat(),
+                        onValueChange = { offsetMs = (it / 10f).roundToInt() * 10 },
+                        valueRange = -10_000f..10_000f,
+                        modifier = Modifier.fillMaxWidth().semantics {
+                            contentDescription = sliderDescription
+                            stateDescription = offsetLabel
+                        },
                     )
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                        TextButton(onClick = { offsetMs = (offsetMs - 100).coerceAtLeast(-10_000) }) {
+                            Text(stringResource(R.string.timing_minus_100))
+                        }
+                        TextButton(onClick = { offsetMs = 0 }) {
+                            Text(stringResource(R.string.timing_reset))
+                        }
+                        TextButton(onClick = { offsetMs = (offsetMs + 100).coerceAtMost(10_000) }) {
+                            Text(stringResource(R.string.timing_plus_100))
+                        }
+                    }
+                    if (previewLines.isBlank()) {
+                        Text(stringResource(R.string.timing_no_timestamps),
+                            style = MaterialTheme.typography.bodySmall, color = MutedBlue)
+                    } else {
+                        Text(stringResource(R.string.timing_preview), style = MaterialTheme.typography.labelMedium)
+                        Text(LyricTiming.shift(previewLines, offsetMs),
+                            style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace)
+                    }
                 }
             },
             confirmButton = {
                 TextButton(onClick = {
-                    val shifted = LyricTiming.shift(editedText, offset ?: 0)
+                    val shifted = LyricTiming.shift(editedText, offsetMs)
                     val enhanced = if (editedText == track.proposed)
-                        LyricTiming.shift(track.enhanced, offset ?: 0) else ""
+                        LyricTiming.shift(track.enhanced, offsetMs) else ""
                     onEditLyrics(shifted, enhanced)
                     showEditor = false
-                }, enabled = editedText.isNotBlank() && offset != null && !applying && !reviewing) {
+                }, enabled = editedText.isNotBlank() && !applying && !reviewing) {
                     Text(stringResource(R.string.save_proposal))
                 }
             },

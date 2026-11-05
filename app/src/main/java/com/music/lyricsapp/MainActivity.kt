@@ -106,6 +106,15 @@ private fun LyricsScreen(onThemeChanged: () -> Unit) {
     val libraryModel: LyricsViewModel = viewModel()
     val tracks by libraryModel.tracks.collectAsStateWithLifecycle()
     val candidates by libraryModel.candidates.collectAsStateWithLifecycle()
+    var pendingReviews by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    val visibleTracks = remember(tracks, pendingReviews) {
+        tracks.map { track -> pendingReviews[track.uri]?.let { track.copy(review = it) } ?: track }
+    }
+    LaunchedEffect(tracks) {
+        pendingReviews = pendingReviews.filter { (uri, review) ->
+            tracks.firstOrNull { it.uri == uri }?.review != review
+        }
+    }
     val scanProgress by LibrarySettings.scanProgress.collectAsStateWithLifecycle()
     var selectedUri by remember { mutableStateOf<String?>(null) }
     var folder by remember { mutableStateOf(LibrarySettings.folder(context)) }
@@ -153,7 +162,7 @@ private fun LyricsScreen(onThemeChanged: () -> Unit) {
     }
     LaunchedEffect(selectedUri) { libraryModel.select(selectedUri) }
 
-    val selectedTrack = selectedUri?.let { uri -> tracks.firstOrNull { it.uri == uri } }
+    val selectedTrack = selectedUri?.let { uri -> visibleTracks.firstOrNull { it.uri == uri } }
 
     val exportLyrics: (LocalTrack, Boolean, Boolean) -> Unit = { track, fromFile, asText ->
         scope.launch {
@@ -175,12 +184,14 @@ private fun LyricsScreen(onThemeChanged: () -> Unit) {
         }
     }
     val markReview: (LocalTrack, String) -> Unit = { track, verdict ->
-        if (!applying && !reviewing) {
+        if (!applying && !reviewing && track.review != verdict) {
             reviewing = true
+            pendingReviews = pendingReviews + (track.uri to verdict)
             scope.launch {
                 try {
-                    withContext(Dispatchers.IO) { LyricStore(context).use { it.setReview(track.uri, verdict) } }
+                    libraryModel.setReview(track.uri, verdict)
                 } catch (e: Exception) {
+                    pendingReviews = pendingReviews - track.uri
                     message = e.message ?: "Could not save review"
                 } finally {
                     reviewing = false
@@ -335,17 +346,7 @@ private fun LyricsScreen(onThemeChanged: () -> Unit) {
         if (!applying && !reviewing) scope.launch {
             reviewing = true
             try {
-                val changed = withContext(Dispatchers.IO) {
-                    LyricStore(context).use { store ->
-                        uris.count { uri ->
-                            val track = store.get(uri)
-                            if (track?.proposed?.isNotBlank() == true) {
-                                store.setReview(uri, "correct")
-                                true
-                            } else false
-                        }
-                    }
-                }
+                val changed = libraryModel.markCorrect(uris)
                 message = "Marked $changed results correct"
             } catch (e: Exception) {
                 message = e.message ?: "Could not update reviews"
@@ -389,7 +390,7 @@ private fun LyricsScreen(onThemeChanged: () -> Unit) {
 
     NavHost(navController = navigation, startDestination = "library") {
         composable("library") {
-            LibraryHome(tracks, folder, autoAdd, scanProgress, filter, message, applying || reviewing,
+            LibraryHome(visibleTracks, folder, autoAdd, scanProgress, filter, message, applying || reviewing,
                 onFilter = { filter = it },
                 onPickFolder = { folderPicker.launch(null) },
                 onScan = { LibrarySettings.scanNow(context); message = "Scanning folder" },

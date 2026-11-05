@@ -4,6 +4,8 @@ package com.music.lyricsapp
 object LyricTiming {
     private val STAMP = Regex("""(\[|<)(\d{1,3}):(\d{2})[.:](\d{2,3})(]|>)""")
 
+    fun hasTimestamps(text: String): Boolean = STAMP.containsMatchIn(text)
+
     fun shift(text: String, offsetMs: Int): String = STAMP.replace(text) { match ->
         val open = match.groupValues[1]
         val close = match.groupValues[5]

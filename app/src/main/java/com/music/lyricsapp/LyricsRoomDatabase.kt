@@ -9,6 +9,7 @@ import androidx.room.PrimaryKey
 import androidx.room.Query
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.Transaction
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.music.lyricsapp.core.LyricsSource
@@ -61,6 +62,35 @@ interface LyricsRoomDao {
 
     @Query("SELECT * FROM provider_results WHERE track_uri = :uri")
     fun observeCandidates(uri: String): Flow<List<ProviderResultEntity>>
+
+    @Query("SELECT COUNT(*) FROM tracks WHERE uri = :uri AND proposed != ''")
+    suspend fun hasProposedLyrics(uri: String): Int
+
+    @Query("UPDATE provider_results SET review = :review WHERE track_uri = :uri AND provider = (SELECT selected_provider FROM tracks WHERE uri = :uri)")
+    suspend fun updateSelectedProviderReview(uri: String, review: String)
+
+    @Query("UPDATE tracks SET review = :review WHERE uri = :uri")
+    suspend fun updateTrackReview(uri: String, review: String): Int
+
+    /** Use Room's connection so its Flow observers see the committed review immediately. */
+    @Transaction
+    suspend fun setReview(uri: String, review: String) {
+        require(review == "correct" || review == "wrong" || review.isEmpty())
+        updateSelectedProviderReview(uri, review)
+        require(updateTrackReview(uri, review) == 1) { "Track is no longer in the library" }
+    }
+
+    @Transaction
+    suspend fun markCorrect(uris: Set<String>): Int {
+        var changed = 0
+        for (uri in uris) {
+            if (hasProposedLyrics(uri) == 1) {
+                setReview(uri, "correct")
+                changed++
+            }
+        }
+        return changed
+    }
 }
 
 @Database(entities = [TrackEntity::class, ProviderResultEntity::class], version = 6, exportSchema = true)

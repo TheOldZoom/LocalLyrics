@@ -31,4 +31,8 @@ class LyricsViewModel(application: Application) : AndroidViewModel(application) 
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     fun select(uri: String?) { selectedUri.value = uri }
+
+    suspend fun setReview(uri: String, review: String) = dao.setReview(uri, review)
+
+    suspend fun markCorrect(uris: Set<String>): Int = dao.markCorrect(uris)
 }
