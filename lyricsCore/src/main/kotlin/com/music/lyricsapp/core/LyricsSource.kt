@@ -22,24 +22,7 @@ enum class LyricsSource(
      */
     val hidden: Boolean = false,
 ) {
-    // Declaration order is the default priority — [AppSettings.lyricsSourceOrder]
-    // and [AppSettings.lyricsSources] both fall back to [LyricsSource.entries]
-    // verbatim, so this list *is* the out-of-the-box experience. Stored by
-    // name rather than position, so this can be rearranged without disturbing
-    // an order somebody has already chosen for themselves.
-    //
-    // The three Apple hosts lead, because they carry the same catalogue and
-    // that catalogue is the one with the voices in it. [BINI_LYRICS] goes
-    // first of the three: it is the only one that will answer to a recording
-    // rather than to a name, and it is where the ISRC the others use comes
-    // from. [LYRICS_PLUS] has the finest timing of the lot and the least
-    // reliable hosting — behind them rather than in front, so a track does not
-    // wait on a mirror that is down to be told what three other hosts already
-    // had.
-    //
-    // [LRC_RED] is ahead of all of them: it is where [BINI_LYRICS] gets its
-    // documents now, so asking it directly is the same Apple timing without
-    // the middleman, and it is the one a dead mirror can't take down with it.
+    // Declaration order is the fallback order; Settings persists the user's order.
     LRC_RED(
         label = "lrc.red",
         detail = "Apple timings by recording, syllable by syllable",
@@ -82,30 +65,28 @@ enum class LyricsSource(
     ),
     SIMP_MUSIC(
         label = "SimpMusic",
-        detail = "Matched on the video, so never the wrong edit",
+        detail = "Video-based timing; verify the recording before writing",
         wordSynced = true,
-        hidden = true,
     ),
     UNISON(
         label = "Unison",
-        detail = "Contributed by listeners, so it has what nobody licensed",
+        detail = "Community-contributed lyrics; verify rights and accuracy",
         wordSynced = true,
     ),
     YOUTUBE_TRANSCRIPT(
         label = "YouTube captions",
-        detail = "Timed captions matched to the exact playing video",
+        detail = "Timed video captions that may differ from the recording",
         wordSynced = false,
     ),
     YOUTUBE_MUSIC(
         label = "YouTube Music",
-        detail = "Plain lyrics from the playing video's Lyrics tab",
+        detail = "Plain lyrics from a video lyrics tab",
         wordSynced = false,
     ),
     MEGALOBIZ(
         label = "Megalobiz",
         detail = "Community-made, whole-line LRC",
         wordSynced = false,
-        hidden = true,
     ),
     KUGOU(
         label = "KuGou",
@@ -114,7 +95,7 @@ enum class LyricsSource(
     ),
     LRCLIB(
         label = "LRCLIB",
-        detail = "Whole lines only, and always up",
+        detail = "Public API with line-timed or plain lyrics",
         wordSynced = false,
     ),
     MUSIXMATCH(
@@ -128,6 +109,13 @@ enum class LyricsSource(
         wordSynced = false,
     ),
     ;
+
+    /** Editorial route risk, based on the implementation in this repository. */
+    val riskLevel: String get() = when (this) {
+        LRCLIB -> "Lower · documented public API"
+        UNISON, MEGALOBIZ -> "Medium · community route"
+        else -> "Higher · unofficial or scraped route"
+    }
 
     companion object {
         /** Every source a listener can see and choose, in default priority. */

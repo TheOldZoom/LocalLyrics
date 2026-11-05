@@ -1,10 +1,14 @@
 package com.music.lyricsapp.tags
 
 import com.music.lyricsapp.core.WORD_LYRICS_FIELD
+import com.music.lyricsapp.StandardLyricsField
+import java.io.File
+import java.io.FileOutputStream
+import java.io.RandomAccessFile
 
 /**
  * Writes iTunes-style metadata atoms — title, artist, album, lyrics, cover —
- * into an already-downloaded M4A/MP4 file, in place.
+ * into an M4A/MP4 file. [tagFile] streams the audio payload unchanged.
  *
  * There is no public Android API for this: [android.media.MediaMuxer] can
  * copy tracks into a fresh MP4 but has no way to declare a title or embed
@@ -22,10 +26,7 @@ import com.music.lyricsapp.core.WORD_LYRICS_FIELD
  * offset, so that one adjustment is sufficient regardless of whether `mdat`
  * sits before or after `moov`.
  *
- * Any layout this doesn't recognise — no `moov`, a box that doesn't fit its
- * parent — falls through to returning the input unchanged rather than
- * guessing: a download that plays untagged is a smaller loss than one a
- * bad rewrite has corrupted.
+ * Unsupported layouts are rejected rather than guessed at.
  */
 object Mp4Tagger {
 
@@ -49,11 +50,45 @@ object Mp4Tagger {
         title: String,
         artist: String,
         album: String?,
-        lyrics: String?,
+        lyrics: String,
         cover: ByteArray?,
         coverIsPng: Boolean,
         /** The A2 form, kept beside [lyrics] rather than instead of it — see [freeformItem]. */
         wordLyrics: String? = null,
+    ): ByteArray {
+        StandardLyricsField.requireLyrics(lyrics)
+        return tagAtBase(bytes, 0L, title, artist, album, lyrics, cover, coverIsPng, wordLyrics)
+    }
+
+    /** Reads only moov into memory. mdat and all other top-level boxes are streamed unchanged. */
+    fun tagFile(
+        source: File, target: File, title: String, artist: String, album: String?,
+        lyrics: String, cover: ByteArray?, coverIsPng: Boolean, wordLyrics: String? = null,
+    ) {
+        StandardLyricsField.requireLyrics(lyrics)
+        require(source.canonicalFile != target.canonicalFile) { "Source and target must differ" }
+        RandomAccessFile(source, "r").use { input ->
+            val (moovOffset, moovSize) = findMoov(input)
+            require(moovSize <= 32L * 1024 * 1024) { "MP4 metadata is too large to handle safely" }
+            val oldMoov = ByteArray(moovSize.toInt())
+            input.seek(moovOffset)
+            input.readFully(oldMoov)
+            val updatedMoov = tagAtBase(oldMoov, moovOffset, title, artist, album,
+                lyrics, cover, coverIsPng, wordLyrics)
+            require(!updatedMoov.contentEquals(oldMoov)) { "Unsupported MP4 metadata layout" }
+            FileOutputStream(target).use { output ->
+                copyRange(input, output, 0, moovOffset)
+                output.write(updatedMoov)
+                copyRange(input, output, moovOffset + moovSize,
+                    input.length() - moovOffset - moovSize)
+                output.fd.sync()
+            }
+        }
+    }
+
+    private fun tagAtBase(
+        bytes: ByteArray, baseOffset: Long, title: String, artist: String, album: String?,
+        lyrics: String, cover: ByteArray?, coverIsPng: Boolean, wordLyrics: String?,
     ): ByteArray {
         val items = mutableListOf<ByteArray>()
         // © is iTunes's own "copyright" prefix for the four text atoms
@@ -66,20 +101,56 @@ object Mp4Tagger {
         // separate `Sync Lyrics`/`sylt`-style representation in some tools;
         // nothing writes it, because `©lyr` holding LRC is what the players
         // that show synced lyrics for an M4A actually read.
-        if (!lyrics.isNullOrBlank()) items += textItem("©lyr", lyrics)
+        items += textItem(StandardLyricsField.ITUNES.fieldName, lyrics)
         if (!wordLyrics.isNullOrBlank()) items += freeformItem(WORD_LYRICS_FIELD, wordLyrics)
         if (cover != null && cover.isNotEmpty()) items += coverItem(cover, coverIsPng)
         if (items.isEmpty()) return bytes
 
-        val working = bytes.copyOf()
-        neutralizeOldLyrics(working)
-        val moov = runCatching {
-            parseBoxes(working, 0, working.size).firstOrNull { it.type == "moov" }
-        }.getOrNull() ?: return bytes
-
         return runCatching {
-            insert(working, moov, udtaAtom(metaAtom(ilstAtom(items))))
+            val working = bytes.copyOf()
+            val moov = parseBoxes(working, 0, working.size).firstOrNull { it.type == "moov" }
+                ?: return@runCatching bytes
+            neutralizeOldLyrics(working)
+            insert(working, moov, udtaAtom(metaAtom(ilstAtom(items))), baseOffset)
         }.getOrDefault(bytes)
+    }
+
+    private fun findMoov(input: RandomAccessFile): Pair<Long, Long> {
+        var at = 0L
+        var hasFtyp = false
+        while (at + 8 <= input.length()) {
+            input.seek(at)
+            val size32 = input.readInt().toLong() and 0xffffffffL
+            val typeBytes = ByteArray(4).also(input::readFully)
+            val type = String(typeBytes, Charsets.ISO_8859_1)
+            val header = if (size32 == 1L) 16L else 8L
+            val size = when (size32) {
+                0L -> input.length() - at
+                1L -> input.readLong().also { require(it >= 16) { "Invalid MP4 extended box size" } }
+                else -> size32
+            }
+            require(size >= header && size <= input.length() - at) { "Invalid MP4 box size" }
+            if (at == 0L) require(type == "ftyp") { "MP4 ftyp is missing" }
+            if (type == "ftyp") hasFtyp = true
+            if (type == "moov") {
+                require(hasFtyp) { "MP4 ftyp is missing" }
+                return at to size
+            }
+            at += size
+        }
+        error("MP4 moov is missing")
+    }
+
+    private fun copyRange(input: RandomAccessFile, output: FileOutputStream, offset: Long, size: Long) {
+        input.seek(offset)
+        var left = size
+        val buffer = ByteArray(64 * 1024)
+        while (left > 0) {
+            val n = input.read(buffer, 0, minOf(left, buffer.size.toLong()).toInt())
+            require(n > 0) { "Truncated MP4 while copying" }
+            output.write(buffer, 0, n)
+            left -= n
+        }
     }
 
     /** Leave old atoms in place at the same byte length, but stop readers seeing them. */
@@ -92,7 +163,7 @@ object Mp4Tagger {
                         val isWord = item.type == "----" &&
                             String(bytes, item.contentOffset, item.size - item.headerLen, Charsets.ISO_8859_1)
                                 .contains(WORD_LYRICS_FIELD)
-                        if (item.type == "©lyr" || isWord) {
+                        if (item.type == StandardLyricsField.ITUNES.fieldName || isWord) {
                             "free".toByteArray(Charsets.US_ASCII).copyInto(bytes, item.offset + 4)
                             if (isWord) {
                                 val needle = WORD_LYRICS_FIELD.toByteArray(Charsets.US_ASCII)
@@ -110,9 +181,10 @@ object Mp4Tagger {
         }
     }
 
-    private fun insert(bytes: ByteArray, moov: BoxRef, udta: ByteArray): ByteArray {
+    private fun insert(bytes: ByteArray, moov: BoxRef, udta: ByteArray, baseOffset: Long): ByteArray {
         val insertAt = moov.end
         val delta = udta.size
+        val absoluteInsertAt = baseOffset + insertAt
 
         val prefix = bytes.copyOf(insertAt)
         // rawSize32 == 0 means "this box runs to the end of its parent" — still
@@ -122,6 +194,7 @@ object Mp4Tagger {
             if (moov.headerLen == 16) {
                 writeU64(prefix, moov.offset + 8, moov.size.toLong() + delta)
             } else {
+                require(moov.size.toLong() + delta <= 0xffffffffL) { "MP4 moov size overflow" }
                 writeU32(prefix, moov.offset, moov.size.toLong() + delta)
             }
         }
@@ -130,8 +203,8 @@ object Mp4Tagger {
         collectOffsetBoxes(bytes, moov, offsetBoxes)
         offsetBoxes.forEach { box ->
             when (box.type) {
-                "stco" -> patchStco(prefix, box, insertAt, delta)
-                "co64" -> patchCo64(prefix, box, insertAt, delta)
+                "stco" -> patchStco(prefix, box, absoluteInsertAt, delta)
+                "co64" -> patchCo64(prefix, box, absoluteInsertAt, delta)
             }
         }
 
@@ -150,25 +223,33 @@ object Mp4Tagger {
     }
 
     /** `stco`: FullBox header, an entry count, then that many 32-bit offsets. */
-    private fun patchStco(bytes: ByteArray, box: BoxRef, insertAt: Int, delta: Int) {
+    private fun patchStco(bytes: ByteArray, box: BoxRef, insertAt: Long, delta: Int) {
         val base = box.contentOffset + 4
         val count = readU32(bytes, base).toInt()
+        require(count >= 0 && base.toLong() + 4L + count.toLong() * 4 <= box.end) { "Invalid stco count" }
         var p = base + 4
         repeat(count) {
             val off = readU32(bytes, p)
-            if (off >= insertAt) writeU32(bytes, p, off + delta)
+            if (off >= insertAt) {
+                require(off + delta <= 0xffffffffL) { "stco offset overflow" }
+                writeU32(bytes, p, off + delta)
+            }
             p += 4
         }
     }
 
     /** `co64`: the same shape as [patchStco], with 64-bit offsets. */
-    private fun patchCo64(bytes: ByteArray, box: BoxRef, insertAt: Int, delta: Int) {
+    private fun patchCo64(bytes: ByteArray, box: BoxRef, insertAt: Long, delta: Int) {
         val base = box.contentOffset + 4
         val count = readU32(bytes, base).toInt()
+        require(count >= 0 && base.toLong() + 4L + count.toLong() * 8 <= box.end) { "Invalid co64 count" }
         var p = base + 4
         repeat(count) {
             val off = readU64(bytes, p)
-            if (off >= insertAt) writeU64(bytes, p, off + delta)
+            if (off >= insertAt) {
+                require(off <= Long.MAX_VALUE - delta) { "co64 offset overflow" }
+                writeU64(bytes, p, off + delta)
+            }
             p += 8
         }
     }
@@ -182,16 +263,19 @@ object Mp4Tagger {
             var headerLen = 8
             var size = size32
             if (size32 == 1L) {
-                if (pos + 16 > end) break
+                require(pos + 16 <= end) { "Truncated MP4 extended box" }
                 size = readU64(bytes, pos + 8)
                 headerLen = 16
             } else if (size32 == 0L) {
                 size = (end - pos).toLong()
             }
-            if (size < headerLen || pos + size > end || size > Int.MAX_VALUE) break
+            require(size >= headerLen && size <= Int.MAX_VALUE && size <= end.toLong() - pos) {
+                "Invalid MP4 box"
+            }
             out += BoxRef(pos, headerLen, size.toInt(), size32, type)
             pos += size.toInt()
         }
+        require(pos == end) { "Truncated MP4 box list" }
         return out
     }
 

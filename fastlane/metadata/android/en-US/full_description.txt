@@ -1,0 +1,7 @@
+Lyrics scans a music folder you choose with Android's Storage Access Framework. It can look up lyrics from the sources you enable, compare results, and store a selected result in a standard audio lyrics field. Audio files stay on your device. Online sources receive track metadata only after you opt in.
+
+Automatic writing starts off. Before a manual write, you can review, edit, and adjust timing. The app writes a separate tagged candidate, checks its standard lyrics field, and retains a restorable backup of the original. A Needs attention screen lists recovery files.
+
+Supported writing formats are MP3, FLAC, M4A, audio MP4, and WebM. Other formats are visible but cannot be tagged yet. No analytics, Google Play Services, or proprietary SDKs are included.
+
+This is GPL-3.0 software. Lyrics provided by third parties may be copyrighted; check rights before redistribution.

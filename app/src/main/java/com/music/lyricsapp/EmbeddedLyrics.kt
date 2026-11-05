@@ -11,53 +11,14 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.InputStream
 
-/**
- * The lyrics already sitting inside a downloaded file.
- *
- * The read side of what the download path wrote — see `MediaTagger`, and the
- * three taggers under it. A track that was downloaded had its lyrics fetched
- * once, at download time, and written into the file; asking four servers for
- * them again every time it is played is a network round trip to arrive at a
- * string that is already on disk, and it is the reason a downloaded song showed
- * nothing at all with the connection off.
- *
- * Two fields are read, in this order:
- *
- *  - `BITCHORD_LYRICS`, this app's own, holding the "enhanced" A2 form with the
- *    word timings intact — see [toEnhancedLrc].
- *  - the container's standard lyrics field, holding plain `[mm:ss.xx]` LRC.
- *
- * The second is what every other player reads and what older downloads have,
- * so it is the fallback rather than the exception. Preferring the first is what
- * keeps a downloaded song lighting up word by word instead of a line at a time.
- *
- * Never throws. A file that isn't one of the three containers, or is one and
- * has no lyrics in it, is a null — the caller falls back to the network, which
- * is exactly what it did before this existed.
- *
- * ### Offline packages
- *
- * One kind of download has no container to have been written into: an HLS or
- * DASH stream is saved as a directory of fMP4 segments behind a playlist, and
- * its `localUri` points at that playlist. `OfflineHls` and `OfflineDash` write
- * the lyrics beside it as a `lyrics.lrc` sidecar for exactly that reason — so
- * [sidecar] is tried first, and a package's lyrics come back the same shape as
- * a tagged file's. Without it those tracks fetched their lyrics from the
- * network on every play and showed none at all offline, which is the failure
- * this whole object exists to prevent.
- */
+/** Reads local enhanced timing for playback, falling back to standard lyrics. */
 object EmbeddedLyrics {
 
     private const val TAG = "Lyrics"
 
     /**
-     * Most bytes worth pulling to find a tag.
-     *
-     * A cap rather than a size: this reads whatever region of the file holds
-     * the metadata, and that region is small in all three containers — but its
-     * length is stated *by the file*, so a corrupt or hostile one could claim
-     * any number at all. `LyricsTag` caps what it writes at 64k, so anything
-     * past this is not a tag this app produced.
+     * Maximum prefix read for file URI and sidecar compatibility. Content URI
+     * reads use [RawEmbeddedLyrics] to stream the file through bounded metadata parsing.
      */
     private const val MAX_TAG_BYTES = 8 * 1024 * 1024
 
@@ -67,14 +28,17 @@ object EmbeddedLyrics {
      * Touches the filesystem, so it runs on [Dispatchers.IO] regardless of
      * where it is called from.
      */
-    suspend fun forUri(context: Context, uriString: String): List<LyricLine>? =
+    suspend fun forUri(context: Context, uriString: String, extension: String? = null): List<LyricLine>? =
         withContext(Dispatchers.IO) {
-            val raw = runCatching { read(context, Uri.parse(uriString)) }
+            val uri = Uri.parse(uriString)
+            val raw = runCatching {
+                if (extension != null && uri.scheme != "file") RawEmbeddedLyrics.readPreferred(context, uri, extension)
+                else read(context, uri)
+            }
                 .onFailure { Log.d(TAG, "no embedded lyrics in $uriString: ${it.message}") }
                 .getOrNull()
                 ?: return@withContext null
-            // The same last pass the network sources get, so a downloaded track
-            // and a streamed one draw their backing vocals the same way.
+            // Apply the same background-vocal pass used for fetched lyrics.
             LrcLib.parseLrc(raw).takeIf { lines -> lines.any { it.text.isNotBlank() } }
                 ?.withBackgroundVocals()
         }
@@ -111,7 +75,7 @@ object EmbeddedLyrics {
     }
 
     /**
-     * The raw LRC text in [head], whichever of the three containers it is.
+     * The raw LRC text in [head], whichever supported container it is.
      *
      * Split from [read] so the parsing can be tested against bytes a tagger
      * just produced, without a device or a `Context` in the way — the round
@@ -119,7 +83,7 @@ object EmbeddedLyrics {
      */
     internal fun fromBytes(head: ByteArray): String? = fromBytes(head, standardOnly = false)
 
-    /** The portable field exposed as `LYRICS` by TagLib, which PixelPlayer reads. */
+    /** Reads only the portable container field for write verification. */
     internal fun fromBytesStandard(head: ByteArray): String? = fromBytes(head, standardOnly = true)
 
     private fun fromBytes(head: ByteArray, standardOnly: Boolean): String? {

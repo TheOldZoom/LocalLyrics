@@ -1,6 +1,9 @@
 package com.music.lyricsapp
 
 import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.FileOutputStream
+import java.io.RandomAccessFile
 
 /** Reads and updates the standard ID3 USLT field without changing audio frames. */
 object Mp3Lyrics {
@@ -10,7 +13,7 @@ object Mp3Lyrics {
         val tag = parse(bytes) ?: return null
         var otherLanguage: String? = null
         for (frame in tag.frames) {
-            if (String(frame, 0, 4, Charsets.ISO_8859_1) != "USLT") continue
+            if (String(frame, 0, 4, Charsets.ISO_8859_1) != StandardLyricsField.ID3.fieldName) continue
             val payload = frame.copyOfRange(10, frame.size)
             if (payload.size < 6) continue
             val encoding = payload[0].toInt() and 255
@@ -39,15 +42,15 @@ object Mp3Lyrics {
     }
 
     fun write(bytes: ByteArray, lyrics: String): ByteArray {
-        require(lyrics.isNotBlank() && lyrics.length <= 64_000) { "Invalid lyrics" }
+        StandardLyricsField.requireLyrics(lyrics)
         val old = parse(bytes)
         require(old != null || (bytes.size >= 2 && (bytes[0].toInt() and 255) == 0xff &&
             (bytes[1].toInt() and 0xe0) == 0xe0)) { "Invalid MP3 file" }
         val version = old?.version ?: 3
-        // TagLib exposes every USLT frame as a LYRICS value. An older frame in
-        // another language could otherwise win PixelPlayer's first-valid pick.
+        // Replace every USLT language variant so another player cannot select
+        // an older value before this one.
         val kept = old?.frames.orEmpty().filterNot { frame ->
-            String(frame, 0, 4, Charsets.ISO_8859_1) == "USLT"
+            String(frame, 0, 4, Charsets.ISO_8859_1) == StandardLyricsField.ID3.fieldName
         }
         val content = ByteArrayOutputStream().apply {
             if (version == 4) {
@@ -60,7 +63,7 @@ object Mp3Lyrics {
         }.toByteArray()
         val body = ByteArrayOutputStream().apply {
             kept.forEach { write(it) }
-            write("USLT".toByteArray(Charsets.US_ASCII))
+            write(StandardLyricsField.ID3.fieldName.toByteArray(Charsets.US_ASCII))
             write(if (version == 4) syncSafe(content.size) else bigEndian(content.size))
             write(byteArrayOf(0, 0))
             write(content)
@@ -72,6 +75,39 @@ object Mp3Lyrics {
         out.write(body)
         out.write(bytes, old?.audioStart ?: 0, bytes.size - (old?.audioStart ?: 0))
         return out.toByteArray()
+    }
+
+    /** Holds only the ID3 tag in memory; MPEG audio frames are copied in fixed-size chunks. */
+    fun write(source: File, target: File, lyrics: String) {
+        StandardLyricsField.requireLyrics(lyrics)
+        require(source.canonicalFile != target.canonicalFile) { "Source and target must differ" }
+        RandomAccessFile(source, "r").use { input ->
+            require(input.length() >= 4) { "Truncated MP3" }
+            val header = ByteArray(10)
+            input.readFully(header, 0, minOf(header.size.toLong(), input.length()).toInt())
+            val oldTagSize = if (String(header, 0, 3, Charsets.US_ASCII) == "ID3") {
+                val body = readSyncSafe(header, 6)
+                val size = body.toLong() + 10
+                require(size <= 32L * 1024 * 1024 && size <= input.length()) { "Unsafe ID3 tag size" }
+                size.toInt()
+            } else 0
+            val prefixSize = if (oldTagSize > 0) oldTagSize else 4
+            val prefix = ByteArray(prefixSize)
+            input.seek(0)
+            input.readFully(prefix)
+            val updatedTagAndPrefix = write(prefix, lyrics)
+            FileOutputStream(target).use { output ->
+                output.write(updatedTagAndPrefix)
+                input.seek(prefixSize.toLong())
+                val buffer = ByteArray(64 * 1024)
+                while (true) {
+                    val n = input.read(buffer)
+                    if (n < 0) break
+                    output.write(buffer, 0, n)
+                }
+                output.fd.sync()
+            }
+        }
     }
 
     private fun parse(bytes: ByteArray): Tag? {

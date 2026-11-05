@@ -53,6 +53,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -67,32 +68,20 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.music.lyricsapp.core.LrcLib
 import com.music.lyricsapp.core.LyricsSource
+import com.music.lyricsapp.core.toEnhancedLrc
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.rememberNavController
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-
-private val DeepBlue = Color(0xFF142B3A)
-private val CardBlue = Color(0xFF203B4C)
-private val PaleBlue = Color(0xFFE7F2F0)
-private val SeaGlass = Color(0xFF8BD4C6)
-private val WarmGold = Color(0xFFFFCA81)
-private val SoftCoral = Color(0xFFFFA99D)
-private val MutedBlue = Color(0xFFAEC5CC)
-
-private val LyricsColors = darkColorScheme(
-    primary = SeaGlass,
-    onPrimary = DeepBlue,
-    secondary = WarmGold,
-    background = DeepBlue,
-    surface = CardBlue,
-    onSurface = PaleBlue,
-    onSurfaceVariant = MutedBlue,
-    error = SoftCoral,
-)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -100,46 +89,24 @@ class MainActivity : ComponentActivity() {
         LibrarySettings.schedule(this)
         if (LibrarySettings.folder(this).isNotBlank()) LibrarySettings.scanNow(this)
         setContent {
-            MaterialTheme(colorScheme = LyricsColors) {
-                Surface(Modifier.fillMaxSize(), color = DeepBlue) { LyricsScreen() }
+            var theme by remember { mutableStateOf(ThemePreference.get(this)) }
+            LyricsAppTheme(this, theme) {
+                Surface(Modifier.fillMaxSize(), color = DeepBlue) {
+                    LyricsScreen(onThemeChanged = { theme = ThemePreference.get(this) })
+                }
             }
         }
     }
 }
-
-private enum class TrackFilter(val title: String) {
-    ALL("All"), REVIEW("To review"), CORRECT("Correct"), WRONG("Wrong"),
-    IN_FILE("In file"), NEEDS_HELP("Needs help")
-}
-
-private fun LocalTrack.inFilter(filter: TrackFilter): Boolean = when (filter) {
-    TrackFilter.ALL -> true
-    TrackFilter.REVIEW -> proposed.isNotBlank() && review.isBlank() && status != "dismissed"
-    TrackFilter.CORRECT -> review == "correct"
-    TrackFilter.WRONG -> review == "wrong"
-    TrackFilter.IN_FILE -> existing.isNotBlank()
-    TrackFilter.NEEDS_HELP -> status in setOf("miss", "error", "unsupported")
-}
-
-private fun LocalTrack.displayStatus(): Pair<String, Color> = when {
-    review == "wrong" -> "Marked wrong" to SoftCoral
-    review == "correct" -> "Marked correct" to SeaGlass
-    status == "applied" -> "Added · review it" to WarmGold
-    status == "ready" -> "Fetched · review it" to WarmGold
-    status == "existing" -> "In file" to SeaGlass
-    status == "miss" -> "No match found" to MutedBlue
-    status == "error" -> "Needs attention" to SoftCoral
-    status == "unsupported" -> "Format not supported" to MutedBlue
-    status == "dismissed" -> "Dismissed" to MutedBlue
-    else -> "Searching" to MutedBlue
-}
-
 @Composable
-private fun LyricsScreen() {
+private fun LyricsScreen(onThemeChanged: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    var tracks by remember { mutableStateOf<List<LocalTrack>>(emptyList()) }
-    var candidates by remember { mutableStateOf<List<ProviderCandidate>>(emptyList()) }
+    val navigation = rememberNavController()
+    val libraryModel: LyricsViewModel = viewModel()
+    val tracks by libraryModel.tracks.collectAsStateWithLifecycle()
+    val candidates by libraryModel.candidates.collectAsStateWithLifecycle()
+    val scanProgress by LibrarySettings.scanProgress.collectAsStateWithLifecycle()
     var selectedUri by remember { mutableStateOf<String?>(null) }
     var folder by remember { mutableStateOf(LibrarySettings.folder(context)) }
     var autoAdd by remember { mutableStateOf(LibrarySettings.autoAdd(context)) }
@@ -147,9 +114,13 @@ private fun LyricsScreen() {
     var message by remember { mutableStateOf("") }
     var applying by remember { mutableStateOf(false) }
     var reviewing by remember { mutableStateOf(false) }
-    var settings by remember { mutableStateOf(false) }
+    var artifacts by remember { mutableStateOf<List<RecoveryManager.Artifact>>(emptyList()) }
+    var artifactBusy by remember { mutableStateOf(false) }
+    var pendingDelete by remember { mutableStateOf<RecoveryManager.Artifact?>(null) }
     var filter by remember { mutableStateOf(TrackFilter.ALL) }
     var exportPayload by remember { mutableStateOf("") }
+    var showAutoIntro by remember { mutableStateOf(!LibrarySettings.autoIntroSeen(context)) }
+    var showPrivacyIntro by remember { mutableStateOf(!LibrarySettings.privacyIntroSeen(context)) }
 
     val exportPicker = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri: Uri? ->
         if (uri != null) {
@@ -172,7 +143,6 @@ private fun LyricsScreen() {
                 LibrarySettings.setFolder(context, uri.toString())
                 folder = uri.toString()
                 selectedUri = null
-                tracks = emptyList()
                 filter = TrackFilter.ALL
                 LibrarySettings.scanNow(context)
                 message = "Scanning selected folder"
@@ -181,27 +151,9 @@ private fun LyricsScreen() {
             }
         }
     }
-    LaunchedEffect(folder) {
-        while (true) {
-            tracks = withContext(Dispatchers.IO) { LyricStore(context).use { it.all() } }
-            delay(2_000)
-        }
-    }
-    LaunchedEffect(selectedUri) {
-        val uri = selectedUri ?: run {
-            candidates = emptyList()
-            return@LaunchedEffect
-        }
-        while (true) {
-            candidates = withContext(Dispatchers.IO) { LyricStore(context).use { it.candidates(uri) } }
-            delay(900)
-        }
-    }
+    LaunchedEffect(selectedUri) { libraryModel.select(selectedUri) }
 
     val selectedTrack = selectedUri?.let { uri -> tracks.firstOrNull { it.uri == uri } }
-    BackHandler(enabled = selectedTrack != null || settings) {
-        if (settings) settings = false else selectedUri = null
-    }
 
     val exportLyrics: (LocalTrack, Boolean, Boolean) -> Unit = { track, fromFile, asText ->
         scope.launch {
@@ -228,7 +180,6 @@ private fun LyricsScreen() {
             scope.launch {
                 try {
                     withContext(Dispatchers.IO) { LyricStore(context).use { it.setReview(track.uri, verdict) } }
-                    tracks = tracks.map { if (it.uri == track.uri) it.copy(review = verdict) else it }
                 } catch (e: Exception) {
                     message = e.message ?: "Could not save review"
                 } finally {
@@ -244,19 +195,13 @@ private fun LyricsScreen() {
                 try {
                     val outcome = ApprovedWriter.apply(context, track)
                     withContext(Dispatchers.IO) {
-                        LyricStore(context).use { store ->
-                            val savedCandidates = store.candidates(track.uri)
-                            store.scanned(track.copy(uri = outcome.uri, name = outcome.name,
-                                signature = outcome.signature,
-                                status = "applied", existing = track.proposed))
-                            savedCandidates.forEach { store.setCandidate(outcome.uri, it) }
-                            store.update(outcome.uri, "applied", track.source, track.proposed, track.enhanced)
-                            if (outcome.replaced) store.delete(track.uri)
-                            else store.update(track.uri, "dismissed")
-                        }
+                        LyricStore(context).use { it.recordWrite(track, outcome) }
                     }
                     message = outcome.message
-                    selectedUri = null
+                    if (outcome.replaced) {
+                        selectedUri = null
+                        navigation.popBackStack()
+                    }
                 } catch (e: Exception) {
                     message = e.message ?: "Could not write lyrics"
                 } finally {
@@ -278,6 +223,7 @@ private fun LyricsScreen() {
                     }
                     LibrarySettings.scanNow(context)
                     selectedUri = null
+                    navigation.popBackStack()
                     message = "Searching again for $title"
                 } catch (e: Exception) {
                     message = e.message ?: "Could not restart the search"
@@ -288,10 +234,9 @@ private fun LyricsScreen() {
     val selectProvider: (LocalTrack, LyricsSource) -> Unit = { track, source ->
         if (!applying && !reviewing) scope.launch {
             try {
-                val updated = withContext(Dispatchers.IO) {
+                withContext(Dispatchers.IO) {
                     LyricStore(context).use { it.selectCandidate(track.uri, source) }
                 }
-                tracks = tracks.map { if (it.uri == track.uri) updated else it }
                 message = "Showing ${source.label} lyrics"
             } catch (e: Exception) {
                 message = e.message ?: "Could not select provider"
@@ -302,10 +247,7 @@ private fun LyricsScreen() {
         if (!applying && !reviewing) scope.launch {
             try {
                 withContext(Dispatchers.IO) { LyricStore(context).use { it.clearCandidateLookup(track.uri) } }
-                candidates = emptyList()
-                tracks = tracks.map { if (it.uri == track.uri) it.copy(status = "new", source = "",
-                    proposed = "", enhanced = "", review = "", selectedProvider = "", providerScan = "") else it }
-                LibrarySettings.scanNow(context)
+                LibrarySettings.scanNow(context, track.uri)
                 message = "Fetching selected providers again"
             } catch (e: Exception) {
                 message = e.message ?: "Could not restart provider lookup"
@@ -322,523 +264,234 @@ private fun LyricsScreen() {
                     }
                 }
                 selectedUri = null
+                navigation.popBackStack()
                 message = "Result dismissed"
             } catch (e: Exception) {
                 message = e.message ?: "Could not dismiss result"
             }
         }
     }
-
-    if (selectedTrack == null) {
-        LibraryHome(tracks, folder, autoAdd, filter, message,
-            onFilter = { filter = it },
-            onPickFolder = { folderPicker.launch(null) },
-            onScan = { LibrarySettings.scanNow(context); message = "Scanning folder" },
-            onSettings = { settings = true },
-            onOpen = { selectedUri = it.uri },
-            onClearMessage = { message = "" })
-    } else {
-        TrackDetail(selectedTrack, candidates, enabledSources, message, applying, reviewing,
-            onBack = { selectedUri = null },
-            onSelectProvider = { selectProvider(selectedTrack, it) },
-            onRefreshProviders = { refreshProviders(selectedTrack) },
-            onOpenSources = { settings = true },
-            onReview = { markReview(selectedTrack, it) },
-            onExportFetched = { asText -> exportLyrics(selectedTrack, false, asText) },
-            onExportEmbedded = { asText -> exportLyrics(selectedTrack, true, asText) },
-            onApply = { applyLyrics(selectedTrack) },
-            onRetry = { title, artist -> retry(selectedTrack, title, artist) },
-            onDismiss = { dismiss(selectedTrack) },
-            onClearMessage = { message = "" })
-    }
-
-    if (settings) SourceSettings(onClose = { settings = false }, onSaved = { providersChanged ->
-        autoAdd = LibrarySettings.autoAdd(context)
-        enabledSources = LibrarySettings.sources(context)
-        if (providersChanged) scope.launch {
-            withContext(Dispatchers.IO) { LyricStore(context).use { it.invalidateProviderScans() } }
-            LibrarySettings.scanNow(context)
-        }
-    })
-}
-
-@Composable
-private fun LibraryHome(
-    tracks: List<LocalTrack>, folder: String, autoAdd: Boolean, filter: TrackFilter, message: String,
-    onFilter: (TrackFilter) -> Unit, onPickFolder: () -> Unit, onScan: () -> Unit,
-    onSettings: () -> Unit, onOpen: (LocalTrack) -> Unit, onClearMessage: () -> Unit,
-) {
-    val visible = remember(tracks, filter) { tracks.filter { it.inFilter(filter) } }
-    LazyColumn(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding(),
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 20.dp, vertical = 18.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        item {
-            Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("Lyrics", fontSize = 34.sp, fontWeight = FontWeight.Bold, color = PaleBlue)
-                        Text("Your music, with the words in view", color = MutedBlue)
+    val restoreOriginal: (LocalTrack) -> Unit = { track ->
+        if (!applying && track.backupUri.isNotBlank()) {
+            applying = true
+            scope.launch {
+                try {
+                    message = RecoveryManager.restore(context, track.backupUri)
+                    withContext(Dispatchers.IO) {
+                        LyricStore(context).use { it.clearBackup(track.uri) }
                     }
-                    TextButton(onClick = onSettings) { Text("Sources") }
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Button(onClick = onPickFolder) { Text(if (folder.isBlank()) "Choose music folder" else "Change folder") }
-                    OutlinedButton(onClick = onScan, enabled = folder.isNotBlank()) { Text("Scan") }
-                }
-                if (folder.isNotBlank()) {
-                    Surface(color = CardBlue, shape = RoundedCornerShape(20.dp)) {
-                        Row(Modifier.fillMaxWidth().padding(18.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                            SummaryCount(tracks.count { it.inFilter(TrackFilter.REVIEW) }, "To review", WarmGold)
-                            SummaryCount(tracks.count { it.inFilter(TrackFilter.WRONG) }, "Wrong", SoftCoral)
-                            SummaryCount(tracks.count { it.inFilter(TrackFilter.IN_FILE) }, "In files", SeaGlass)
-                        }
-                    }
-                    Text(if (autoAdd) "Automatic writing is on. Review added lyrics for mistakes."
-                        else "Automatic writing is off. Review a result before adding it.",
-                        color = MutedBlue, style = MaterialTheme.typography.bodySmall)
-                }
-                if (message.isNotBlank()) MessageBanner(message, onClearMessage)
+                    selectedUri = null
+                    navigation.popBackStack()
+                    LibrarySettings.scanNow(context)
+                } catch (e: Exception) {
+                    message = e.message ?: "Could not restore original"
+                } finally { applying = false }
             }
-        }
-        if (folder.isNotBlank()) {
-            item {
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(TrackFilter.entries) { option ->
-                        FilterChip(selected = filter == option, onClick = { onFilter(option) },
-                            label = { Text("${option.title} ${tracks.count { it.inFilter(option) }}") })
-                    }
-                }
-            }
-        }
-        if (visible.isEmpty()) {
-            item {
-                Surface(color = CardBlue, shape = RoundedCornerShape(20.dp)) {
-                    Column(Modifier.fillMaxWidth().padding(24.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(if (folder.isBlank()) "Start with your music folder"
-                            else if (tracks.isEmpty()) "No music scanned yet"
-                            else "Nothing in ${filter.title.lowercase()}",
-                            style = MaterialTheme.typography.titleMedium)
-                        Text(if (folder.isBlank()) "Choose a folder to find lyrics already in your files and fetch missing ones."
-                            else if (tracks.isEmpty()) "Tap Scan to look through the selected folder."
-                            else "Choose another filter to see the rest of your music.", color = MutedBlue)
-                    }
-                }
-            }
-        } else {
-            items(visible, key = { it.uri }) { track -> TrackRow(track, onClick = { onOpen(track) }) }
         }
     }
-}
 
-@Composable
-private fun SummaryCount(count: Int, label: String, color: Color) {
-    Column {
-        Text(count.toString(), fontSize = 27.sp, fontWeight = FontWeight.Bold, color = color)
-        Text(label, style = MaterialTheme.typography.labelMedium, color = MutedBlue)
-    }
-}
-
-@Composable
-private fun StatusPill(track: LocalTrack) {
-    val (label, color) = track.displayStatus()
-    Surface(color = color.copy(alpha = 0.16f), shape = RoundedCornerShape(50)) {
-        Text(label, color = color, style = MaterialTheme.typography.labelMedium,
-            modifier = Modifier.padding(horizontal = 11.dp, vertical = 6.dp))
-    }
-}
-
-@Composable
-private fun TrackRow(track: LocalTrack, onClick: () -> Unit) {
-    val preview = remember(track.proposed, track.existing, track.error, track.status) {
-        val raw = track.proposed.ifBlank { track.existing }
-        if (raw.isNotBlank()) lyricsAsText(raw).lineSequence().firstOrNull { it.isNotBlank() }.orEmpty()
-        else track.error.ifBlank { if (track.status == "new") "Waiting for a lyric result" else "Open for details" }
-    }
-    Column(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(top = 5.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Column(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
-                Column(Modifier.weight(1f)) {
-                    Text(track.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold,
-                        maxLines = 2, overflow = TextOverflow.Ellipsis)
-                    Text(track.artist.ifBlank { "Unknown artist" }, color = MutedBlue,
-                        style = MaterialTheme.typography.bodyMedium, maxLines = 1)
-                }
-                Spacer(Modifier.width(10.dp))
-                StatusPill(track)
-            }
-            if (preview.isNotBlank()) Text(preview, color = PaleBlue.copy(alpha = 0.86f),
-                fontFamily = if (track.proposed.isNotBlank() || track.existing.isNotBlank()) FontFamily.Serif else FontFamily.Default,
-                fontSize = 16.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            if (track.source.isNotBlank()) Text("From ${track.source}", color = MutedBlue,
-                style = MaterialTheme.typography.labelMedium)
-        }
-        HorizontalDivider(color = MutedBlue.copy(alpha = 0.2f))
-    }
-}
-
-@Composable
-private fun TrackDetail(
-    track: LocalTrack, candidates: List<ProviderCandidate>, enabledSources: Set<LyricsSource>,
-    message: String, applying: Boolean, reviewing: Boolean, onBack: () -> Unit,
-    onSelectProvider: (LyricsSource) -> Unit, onRefreshProviders: () -> Unit,
-    onOpenSources: () -> Unit,
-    onReview: (String) -> Unit, onExportFetched: (Boolean) -> Unit,
-    onExportEmbedded: (Boolean) -> Unit, onApply: () -> Unit,
-    onRetry: (String, String) -> Unit, onDismiss: () -> Unit, onClearMessage: () -> Unit,
-) {
-    val context = LocalContext.current
-    val lifecycleOwner = LocalLifecycleOwner.current
-    val player = remember(track.uri) { LocalAudioPlayer(context, Uri.parse(track.uri)) }
-    DisposableEffect(player) { onDispose { player.release() } }
-    DisposableEffect(lifecycleOwner, player) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_STOP) player.pause()
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
-    }
-    LaunchedEffect(player) {
-        while (true) {
-            player.tick()
-            delay(100)
+    val refreshArtifacts: () -> Unit = {
+        if (folder.isNotBlank()) scope.launch {
+            try { artifacts = RecoveryManager.list(context) }
+            catch (e: Exception) { message = e.message ?: "Could not inspect recovery files" }
         }
     }
-    var matchTitle by remember(track.uri) { mutableStateOf(track.title) }
-    var matchArtist by remember(track.uri) { mutableStateOf(track.artist) }
-    val fetchedIsInFile = track.proposed.isNotBlank() && track.existing.trim() == track.proposed.trim()
-    Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = onBack, enabled = !applying) { Text("‹  Library") }
-            Spacer(Modifier.weight(1f))
-            StatusPill(track)
+    val restoreArtifact: (RecoveryManager.Artifact) -> Unit = { artifact ->
+        if (!artifactBusy && artifact.kind == RecoveryManager.Kind.BACKUP) scope.launch {
+            artifactBusy = true
+            try {
+                message = RecoveryManager.restore(context, artifact.uri)
+                artifacts = RecoveryManager.list(context)
+                LibrarySettings.scanNow(context)
+            } catch (e: Exception) {
+                message = e.message ?: "Could not restore backup"
+            } finally { artifactBusy = false }
         }
-        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 20.dp),
-            verticalArrangement = Arrangement.spacedBy(18.dp)) {
-            Column {
-                Text(track.title, fontSize = 29.sp, lineHeight = 34.sp, fontWeight = FontWeight.Bold)
-                Text(track.artist.ifBlank { "Unknown artist" }, color = MutedBlue, fontSize = 16.sp)
-                Text(track.name, color = MutedBlue, style = MaterialTheme.typography.bodySmall)
-            }
-            if (message.isNotBlank()) MessageBanner(message, onClearMessage)
-            PlayerPanel(player, track.durationMs)
-            ProviderPicker(track, candidates, enabledSources, onSelectProvider,
-                onRefreshProviders, onOpenSources)
-            if (track.review == "wrong") {
-                Surface(color = SoftCoral.copy(alpha = 0.14f), shape = RoundedCornerShape(16.dp)) {
-                    Text(if (fetchedIsInFile) "You marked these lyrics wrong. They are still in the audio file. Search again to find a replacement."
-                        else "You marked this result wrong. It will not be written to the file. Adjust the search and try again.",
-                        color = SoftCoral, modifier = Modifier.padding(16.dp))
-                }
-            }
-            if (track.proposed.isNotBlank()) {
-                LyricsPanel(if (fetchedIsInFile) "Fetched lyrics · in file" else "Fetched lyrics",
-                    track.proposed, track.source.ifBlank { "Source unknown" },
-                    onExportRaw = { if (fetchedIsInFile) onExportEmbedded(false) else onExportFetched(false) },
-                    onExportText = { if (fetchedIsInFile) onExportEmbedded(true) else onExportFetched(true) },
-                    enhanced = track.enhanced, player = player)
-                if (track.status != "dismissed") {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("Are these the right words?", style = MaterialTheme.typography.titleMedium)
-                        Text("Only your review marks a result correct or wrong. A provider match is not a guarantee.",
-                            color = MutedBlue, style = MaterialTheme.typography.bodySmall)
-                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                            FilterChip(selected = track.review == "correct", onClick = { onReview("correct") },
-                                enabled = !applying && !reviewing,
-                                label = { Text("Correct") })
-                            FilterChip(selected = track.review == "wrong", onClick = { onReview("wrong") },
-                                enabled = !applying && !reviewing,
-                                label = { Text("Wrong") })
+    }
+    val deleteArtifact: (RecoveryManager.Artifact) -> Unit = { artifact ->
+        if (!artifactBusy) scope.launch {
+            artifactBusy = true
+            try {
+                message = RecoveryManager.delete(context, artifact.uri)
+                artifacts = RecoveryManager.list(context)
+            } catch (e: Exception) {
+                message = e.message ?: "Could not delete recovery file"
+            } finally { artifactBusy = false }
+        }
+    }
+    val cleanupArtifacts: () -> Unit = {
+        if (!artifactBusy) scope.launch {
+            artifactBusy = true
+            try {
+                val count = RecoveryManager.cleanupExpired(context)
+                artifacts = RecoveryManager.list(context)
+                message = "Removed $count expired backups"
+            } catch (e: Exception) {
+                message = e.message ?: "Could not clean up backups"
+            } finally { artifactBusy = false }
+        }
+    }
+    val markSelectedCorrect: (Set<String>) -> Unit = { uris ->
+        if (!applying && !reviewing) scope.launch {
+            reviewing = true
+            try {
+                val changed = withContext(Dispatchers.IO) {
+                    LyricStore(context).use { store ->
+                        uris.count { uri ->
+                            val track = store.get(uri)
+                            if (track?.proposed?.isNotBlank() == true) {
+                                store.setReview(uri, "correct")
+                                true
+                            } else false
                         }
                     }
                 }
-                if (track.status == "ready") {
-                    Button(onClick = onApply, enabled = !applying && !reviewing && track.review != "wrong",
-                        modifier = Modifier.fillMaxWidth()) {
-                        Text(if (applying) "Writing lyrics…" else if (track.existing.isBlank()) "Add lyrics to file" else "Replace lyrics in file")
-                    }
-                }
-            }
-            if (track.existing.isNotBlank() && !fetchedIsInFile) {
-                LyricsPanel("Lyrics already in file", track.existing, "Embedded metadata",
-                    onExportRaw = { onExportEmbedded(false) }, onExportText = { onExportEmbedded(true) },
-                    player = player)
-            }
-            if (track.proposed.isBlank() && track.existing.isBlank()) {
-                Surface(color = CardBlue, shape = RoundedCornerShape(18.dp)) {
-                    Text(track.error.ifBlank { when (track.status) {
-                        "unsupported" -> "This audio format cannot be tagged by the app yet."
-                        "new" -> "The app is looking for lyrics."
-                        else -> "No lyrics are available for this file yet."
-                    } }, modifier = Modifier.padding(18.dp), color = MutedBlue)
-                }
-            }
-            if (track.status != "unsupported") {
-                Surface(color = CardBlue, shape = RoundedCornerShape(18.dp)) {
-                    Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Text("Search again", style = MaterialTheme.typography.titleMedium)
-                        Text("Change the title or artist if the result was for another recording.",
-                            color = MutedBlue, style = MaterialTheme.typography.bodySmall)
-                        OutlinedTextField(value = matchTitle, onValueChange = { matchTitle = it },
-                            label = { Text("Title") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                        OutlinedTextField(value = matchArtist, onValueChange = { matchArtist = it },
-                            label = { Text("Artist") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                        OutlinedButton(onClick = { onRetry(matchTitle, matchArtist) },
-                            enabled = !applying && !reviewing && matchTitle.isNotBlank() && matchArtist.isNotBlank()) {
-                            Text("Search again")
-                        }
-                    }
-                }
-            }
-            if (track.status == "ready" && track.proposed.isNotBlank()) {
-                TextButton(onClick = onDismiss, enabled = !applying && !reviewing) { Text("Dismiss result") }
-            }
-            Spacer(Modifier.height(20.dp))
+                message = "Marked $changed results correct"
+            } catch (e: Exception) {
+                message = e.message ?: "Could not update reviews"
+            } finally { reviewing = false }
         }
     }
-}
-
-@Composable
-private fun PlayerPanel(player: LocalAudioPlayer, fallbackDurationMs: Long) {
-    val duration = player.durationMs.takeIf { it > 0 } ?: fallbackDurationMs.coerceAtLeast(0L)
-    var dragging by remember { mutableStateOf(false) }
-    var draggedPosition by remember { mutableStateOf(0f) }
-    Surface(color = CardBlue, shape = RoundedCornerShape(20.dp)) {
-        Column(Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Button(onClick = player::toggle, enabled = player.ready) {
-                    Text(if (player.playing) "Pause" else "Play")
-                }
-                Column {
-                    Text("Listen and compare", style = MaterialTheme.typography.titleSmall)
-                    Text(if (player.ready) "Tap a lyric line to seek" else "Preparing local audio…",
-                        color = MutedBlue, style = MaterialTheme.typography.bodySmall)
-                }
-            }
-            Slider(value = (if (dragging) draggedPosition else player.positionMs.toFloat())
-                    .coerceIn(0f, duration.coerceAtLeast(1L).toFloat()),
-                onValueChange = { dragging = true; draggedPosition = it },
-                onValueChangeFinished = { player.seekTo(draggedPosition.toLong()); dragging = false },
-                valueRange = 0f..duration.coerceAtLeast(1L).toFloat(),
-                enabled = player.ready && player.durationMs > 0L)
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Text(timestamp(player.positionMs), color = MutedBlue, style = MaterialTheme.typography.labelMedium)
-                Text(timestamp(duration), color = MutedBlue, style = MaterialTheme.typography.labelMedium)
-            }
-            if (player.error.isNotBlank()) Text(player.error, color = SoftCoral,
-                style = MaterialTheme.typography.bodySmall)
-        }
-    }
-}
-
-@Composable
-private fun ProviderPicker(
-    track: LocalTrack, candidates: List<ProviderCandidate>, enabledSources: Set<LyricsSource>,
-    onSelect: (LyricsSource) -> Unit, onRefresh: () -> Unit, onOpenSources: () -> Unit,
-) {
-    val bySource = remember(candidates) { candidates.associateBy { it.source } }
-    Surface(color = CardBlue, shape = RoundedCornerShape(20.dp)) {
-        Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text("Compare providers", style = MaterialTheme.typography.titleMedium)
-            Text("Choose a result to read while the track plays. Your correct and wrong marks stay with each provider.",
-                color = MutedBlue, style = MaterialTheme.typography.bodySmall)
-            Column(Modifier.fillMaxWidth().heightIn(max = 290.dp).verticalScroll(rememberScrollState())) {
-                LyricsSource.offered.forEach { source ->
-                    val result = bySource[source]
-                    val selected = track.selectedProvider == source.name
-                    val state = when {
-                        source !in enabledSources -> if (result?.state == "found") "Off · saved" else "Off"
-                        result?.review == "correct" -> "Correct"
-                        result?.review == "wrong" -> "Wrong"
-                        result?.state == "found" -> if (result.enhanced.isNotBlank()) "Word timed" else "Found"
-                        result?.state == "fetching" -> "Fetching"
-                        result?.state == "timeout" -> "Timed out"
-                        result?.state == "error" -> "Error"
-                        result?.state == "missing" -> "No result"
-                        else -> "Waiting"
-                    }
-                    Column(Modifier.fillMaxWidth()
-                        .clickable(enabled = result?.state == "found") { onSelect(source) }
-                        .padding(vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text(source.label, modifier = Modifier.weight(1f),
-                                color = if (selected) SeaGlass else PaleBlue,
-                                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal)
-                            Text(if (selected) "Selected · $state" else state,
-                                color = when (result?.review) { "wrong" -> SoftCoral; "correct" -> SeaGlass; else -> MutedBlue },
-                                style = MaterialTheme.typography.labelMedium)
-                        }
-                        result?.takeIf { it.state == "found" }?.let { candidate ->
-                            val preview = remember(candidate.plain) {
-                                lyricsAsText(candidate.plain).lineSequence().firstOrNull { it.isNotBlank() }.orEmpty()
+    val writeHighConfidence: () -> Unit = {
+        if (!applying && !reviewing) scope.launch {
+            applying = true
+            try {
+                val eligible = withContext(Dispatchers.IO) {
+                    LyricStore(context).use { store ->
+                        store.all().filter { track ->
+                            if (track.status != "ready" || track.existing.isNotBlank() || track.review == "wrong") false
+                            else {
+                                val candidates = store.candidates(track.uri)
+                                val selected = candidates.firstOrNull { it.source.name == track.selectedProvider }
+                                selected != null && LyricConfidence.canAutoWrite(track, selected, candidates)
                             }
-                            if (preview.isNotBlank()) Text(preview, color = MutedBlue,
-                                fontFamily = FontFamily.Serif, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
                     }
-                    HorizontalDivider(color = MutedBlue.copy(alpha = 0.14f))
                 }
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextButton(onClick = onOpenSources) { Text("Choose providers") }
-                TextButton(onClick = onRefresh) { Text("Fetch again") }
-            }
+                var written = 0
+                var kept = 0
+                eligible.forEachIndexed { index, track ->
+                    message = "Writing ${index + 1} of ${eligible.size} high-confidence tracks"
+                    try {
+                        val outcome = ApprovedWriter.apply(context, track)
+                        withContext(Dispatchers.IO) { LyricStore(context).use { it.recordWrite(track, outcome) } }
+                        if (outcome.replaced) written++ else kept++
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (_: Exception) { kept++ }
+                }
+                message = "Wrote $written tracks; $kept need individual attention"
+            } catch (e: Exception) {
+                message = e.message ?: "Bulk write could not start"
+            } finally { applying = false }
         }
     }
-}
 
-@Composable
-private fun LyricsPanel(
-    title: String, raw: String, source: String,
-    onExportRaw: () -> Unit, onExportText: () -> Unit,
-    enhanced: String = "", player: LocalAudioPlayer? = null,
-) {
-    val context = LocalContext.current
-    val lines = remember(raw, enhanced) {
-        LrcLib.parseLrc(enhanced.ifBlank { raw })
-    }
-    val position = player?.positionMs ?: 0L
-    val activeIndex = if (player?.ready == true) lines.indexOfLast { it.timeMs <= position } else -1
-    val listState = rememberLazyListState()
-    var copied by remember(raw) { mutableStateOf("") }
-    LaunchedEffect(activeIndex, raw) {
-        if (activeIndex >= 0) {
-            listState.animateScrollToItem((activeIndex - 1).coerceAtLeast(0))
+    NavHost(navController = navigation, startDestination = "library") {
+        composable("library") {
+            LibraryHome(tracks, folder, autoAdd, scanProgress, filter, message, applying || reviewing,
+                onFilter = { filter = it },
+                onPickFolder = { folderPicker.launch(null) },
+                onScan = { LibrarySettings.scanNow(context); message = "Scanning folder" },
+                onSettings = { navigation.navigate("settings") },
+                onAttention = { refreshArtifacts(); navigation.navigate("attention") },
+                onOpen = { selectedUri = it.uri; navigation.navigate("track") },
+                onMarkSelectedCorrect = markSelectedCorrect,
+                onWriteHighConfidence = writeHighConfidence,
+                onClearMessage = { message = "" })
         }
-    }
-    fun copy(text: String, label: String) {
-        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-        clipboard.setPrimaryClip(ClipData.newPlainText("Lyrics", text))
-        copied = label
-    }
-    Surface(color = CardBlue, shape = RoundedCornerShape(20.dp)) {
-        Column(Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Column {
-                Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-                Text("$source · ${if (lines.isEmpty()) "Plain text" else if (enhanced.isNotBlank()) "Word timed" else "Line timed"}",
-                    color = MutedBlue, style = MaterialTheme.typography.bodySmall)
-            }
-            if (lines.isEmpty()) {
-                Text(raw, fontFamily = FontFamily.Serif, fontSize = 19.sp, lineHeight = 28.sp)
+        composable("track") {
+            if (selectedTrack == null) {
+                TextButton(onClick = { navigation.popBackStack() }) { Text(stringResource(R.string.return_to_library)) }
             } else {
-                LazyColumn(Modifier.fillMaxWidth().height(350.dp), state = listState,
-                    verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    itemsIndexed(lines) { index, line ->
-                        val active = index == activeIndex
-                        val rendered = if (line.isGap) AnnotatedString("♪")
-                            else if (active && line.words.isNotEmpty()) buildAnnotatedString {
-                            append(line.text)
-                            line.wordSpans.forEachIndexed { wordIndex, span ->
-                                if (line.words[wordIndex].startMs <= position &&
-                                    span.first >= 0 && span.last < line.text.length) {
-                                    addStyle(SpanStyle(color = SeaGlass, fontWeight = FontWeight.Bold),
-                                        span.first, span.last + 1)
+                TrackDetail(selectedTrack, candidates, enabledSources, message, applying, reviewing,
+                    onBack = { selectedUri = null; navigation.popBackStack() },
+                    onSelectProvider = { selectProvider(selectedTrack, it) },
+                    onRefreshProviders = { refreshProviders(selectedTrack) },
+                    onOpenSources = { navigation.navigate("settings") },
+                    onReview = { markReview(selectedTrack, it) },
+                    onExportFetched = { asText -> exportLyrics(selectedTrack, false, asText) },
+                    onExportEmbedded = { asText -> exportLyrics(selectedTrack, true, asText) },
+                    onApply = { applyLyrics(selectedTrack) },
+                    onEditLyrics = { plain, enhanced ->
+                        if (!applying && !reviewing) scope.launch {
+                            reviewing = true
+                            try {
+                                withContext(Dispatchers.IO) {
+                                    LyricStore(context).use { it.editProposed(selectedTrack.uri, plain, enhanced) }
                                 }
-                            }
-                        } else AnnotatedString(line.text)
-                        Surface(color = if (active) SeaGlass.copy(alpha = 0.13f) else Color.Transparent,
-                            shape = RoundedCornerShape(10.dp)) {
-                            Row(Modifier.fillMaxWidth()
-                                .clickable(enabled = player?.ready == true) { player?.seekTo(line.timeMs) }
-                                .padding(horizontal = 8.dp, vertical = 8.dp),
-                                horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                                Text(timestamp(line.timeMs), color = if (active) SeaGlass else MutedBlue,
-                                    style = MaterialTheme.typography.labelMedium,
-                                    modifier = Modifier.width(43.dp).padding(top = 5.dp))
-                                Text(rendered, color = if (active && line.words.isEmpty()) SeaGlass else PaleBlue,
-                                    fontFamily = FontFamily.Serif, fontSize = 19.sp, lineHeight = 27.sp,
-                                    modifier = Modifier.weight(1f))
-                            }
+                                message = "Edited lyrics saved as a proposal"
+                            } catch (e: Exception) {
+                                message = e.message ?: "Could not save edited lyrics"
+                            } finally { reviewing = false }
                         }
-                    }
-                }
+                    },
+                    onRestore = { restoreOriginal(selectedTrack) },
+                    onNextReview = {
+                        val next = tracks.firstOrNull { it.uri != selectedTrack.uri &&
+                            it.inFilter(TrackFilter.REVIEW) }
+                        if (next != null) selectedUri = next.uri
+                        else { selectedUri = null; navigation.popBackStack() }
+                    },
+                    onRetry = { title, artist -> retry(selectedTrack, title, artist) },
+                    onDismiss = { dismiss(selectedTrack) },
+                    onClearMessage = { message = "" })
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextButton(onClick = { copy(raw, "Copied lyrics") }) {
-                    Text(if (lines.isEmpty()) "Copy lyrics" else "Copy LRC")
-                }
-                if (lines.isNotEmpty()) TextButton(onClick = { copy(lyricsAsText(raw), "Copied words") }) {
-                    Text("Copy words")
-                }
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextButton(onClick = onExportRaw) { Text(if (lines.isEmpty()) "Export lyrics" else "Export LRC") }
-                if (lines.isNotEmpty()) TextButton(onClick = onExportText) { Text("Export text") }
-            }
-            if (copied.isNotBlank()) Text(copied, color = SeaGlass,
-                style = MaterialTheme.typography.labelMedium)
         }
+        composable("attention") {
+            NeedsAttentionScreen(artifacts, LibrarySettings.backupDays(context), message, artifactBusy,
+                onBack = { navigation.popBackStack() }, onRefresh = refreshArtifacts,
+                onRestore = restoreArtifact, onDelete = { pendingDelete = it },
+                onCleanup = cleanupArtifacts, onClearMessage = { message = "" })
+        }
+        composable("settings") {
+            SourceSettings(onClose = { navigation.popBackStack() }, onSaved = { providersChanged ->
+                autoAdd = LibrarySettings.autoAdd(context)
+                enabledSources = LibrarySettings.sources(context)
+                onThemeChanged()
+                if (providersChanged) LibrarySettings.scanNow(context)
+            })
+        }
+    }
+    if (showPrivacyIntro) AlertDialog(
+        onDismissRequest = {},
+        title = { Text(stringResource(R.string.choose_where_lookup_data_goes)) },
+        text = { Text(stringResource(R.string.for_each_music_file_you_choose_the_app_sends_its)) },
+        confirmButton = { Button(onClick = {
+            LibrarySettings.setOnlineLookup(context, true)
+            showPrivacyIntro = false
+            if (folder.isNotBlank()) LibrarySettings.scanNow(context)
+        }) { Text(stringResource(R.string.enable_online_lookup)) } },
+        dismissButton = { TextButton(onClick = { showPrivacyIntro = false }) { Text(stringResource(R.string.not_now)) } },
+    )
+    if (showAutoIntro && !showPrivacyIntro) AlertDialog(
+        onDismissRequest = { LibrarySettings.setAutoIntroSeen(context); showAutoIntro = false },
+        title = { Text(stringResource(R.string.your_music_stays_in_your_control)) },
+        text = { Text(stringResource(R.string.automatic_writing_starts_off_the_app_searches_yo)) },
+        confirmButton = { TextButton(onClick = {
+            LibrarySettings.setAutoIntroSeen(context); showAutoIntro = false
+        }) { Text(stringResource(R.string.continue_action)) } },
+    )
+    pendingDelete?.let { artifact ->
+        AlertDialog(onDismissRequest = { pendingDelete = null },
+            title = { Text(stringResource(R.string.delete_recovery_file)) },
+            text = { Text(stringResource(R.string.delete_artifact_name_this_cannot_be_undone, artifact.name)) },
+            confirmButton = { Button(onClick = {
+                pendingDelete = null
+                deleteArtifact(artifact)
+            }) { Text(stringResource(R.string.delete)) } },
+            dismissButton = { TextButton(onClick = { pendingDelete = null }) { Text(stringResource(R.string.cancel)) } })
     }
 }
 
-private fun timestamp(milliseconds: Long): String {
-    val totalSeconds = milliseconds / 1_000
-    return "${(totalSeconds / 60).toString().padStart(2, '0')}:${(totalSeconds % 60).toString().padStart(2, '0')}"
-}
-
-/** Keep plain embedded text as-is; strip LRC timestamps from timed lyrics. */
-private fun lyricsAsText(raw: String): String =
-    LrcLib.parseLrc(raw).map { it.text }.filter { it.isNotBlank() }.joinToString("\n")
-        .ifBlank { raw }
-
 @Composable
-private fun MessageBanner(message: String, onClear: () -> Unit) {
+internal fun MessageBanner(message: String, onClear: () -> Unit) {
     Surface(color = SeaGlass.copy(alpha = 0.13f), shape = RoundedCornerShape(14.dp)) {
         Row(Modifier.fillMaxWidth().padding(start = 14.dp, top = 6.dp, bottom = 6.dp),
             verticalAlignment = Alignment.CenterVertically) {
             Text(message, modifier = Modifier.weight(1f), color = PaleBlue,
                 style = MaterialTheme.typography.bodySmall)
-            TextButton(onClick = onClear) { Text("Close") }
+            TextButton(onClick = onClear) { Text(stringResource(R.string.close)) }
         }
     }
-}
-
-@Composable
-private fun SourceSettings(onClose: () -> Unit, onSaved: (Boolean) -> Unit) {
-    val context = LocalContext.current
-    val initialSources = remember { LibrarySettings.sources(context) }
-    val initialKey = remember { LibrarySettings.paxKey(context) }
-    var chosen by remember { mutableStateOf(initialSources) }
-    var key by remember { mutableStateOf(initialKey) }
-    var autoAdd by remember { mutableStateOf(LibrarySettings.autoAdd(context)) }
-    AlertDialog(onDismissRequest = onClose, title = { Text("Lyrics sources") },
-        text = {
-            Column(Modifier.height(430.dp).verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Row(Modifier.fillMaxWidth().clickable { autoAdd = !autoAdd },
-                    verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("Write lyrics automatically", fontWeight = FontWeight.Medium)
-                        Text("New lyrics may be added before you review them.",
-                            color = MutedBlue, style = MaterialTheme.typography.bodySmall)
-                    }
-                    Switch(checked = autoAdd, onCheckedChange = { autoAdd = it })
-                }
-                OutlinedTextField(value = key, onValueChange = { key = it },
-                    label = { Text("PaxSenix API key (optional)") }, modifier = Modifier.fillMaxWidth())
-                Text("Providers", style = MaterialTheme.typography.titleSmall)
-                Text("Every enabled provider is checked for each supported music file. Compare their results on the track screen.",
-                    color = MutedBlue, style = MaterialTheme.typography.bodySmall)
-                LyricsSource.offered.forEach { source ->
-                    Row(Modifier.fillMaxWidth().clickable {
-                        chosen = if (source in chosen) chosen - source else chosen + source
-                    }, verticalAlignment = Alignment.CenterVertically) {
-                        Text(source.label, modifier = Modifier.weight(1f))
-                        Switch(checked = source in chosen, onCheckedChange = {
-                            chosen = if (it) chosen + source else chosen - source
-                        })
-                    }
-                }
-            }
-        },
-        confirmButton = { Button(onClick = {
-            LibrarySettings.setSources(context, chosen)
-            LibrarySettings.setPaxKey(context, key)
-            LibrarySettings.setAutoAdd(context, autoAdd)
-            onSaved(chosen != initialSources || key != initialKey)
-            onClose()
-        }) { Text("Save") } },
-        dismissButton = { TextButton(onClick = onClose) { Text("Cancel") } })
 }

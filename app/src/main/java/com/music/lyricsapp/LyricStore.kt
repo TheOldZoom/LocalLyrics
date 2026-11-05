@@ -14,6 +14,7 @@ data class LocalTrack(
     val review: String = "",
     val selectedProvider: String = "",
     val providerScan: String = "",
+    val backupUri: String = "",
 )
 
 data class ProviderCandidate(
@@ -22,18 +23,21 @@ data class ProviderCandidate(
     val plain: String = "",
     val enhanced: String = "",
     val review: String = "",
+    val fetchedAt: Long = 0L,
+    val lookupKey: String = "",
 )
 
-class LyricStore(context: Context) : SQLiteOpenHelper(context, "lyrics.db", null, 3) {
+class LyricStore(context: Context) : SQLiteOpenHelper(context, "lyrics.db", null, 6) {
+    private fun changed() { LyricsRoomDatabase.current()?.invalidationTracker?.refreshAsync() }
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("""CREATE TABLE tracks (
-            uri TEXT PRIMARY KEY, name TEXT NOT NULL, title TEXT NOT NULL,
+            uri TEXT NOT NULL PRIMARY KEY, name TEXT NOT NULL, title TEXT NOT NULL,
             artist TEXT NOT NULL, album TEXT NOT NULL, duration_ms INTEGER NOT NULL,
             signature TEXT NOT NULL, status TEXT NOT NULL, source TEXT NOT NULL DEFAULT '',
             proposed TEXT NOT NULL DEFAULT '', enhanced TEXT NOT NULL DEFAULT '',
             existing TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '',
             review TEXT NOT NULL DEFAULT '', selected_provider TEXT NOT NULL DEFAULT '',
-            provider_scan TEXT NOT NULL DEFAULT ''
+            provider_scan TEXT NOT NULL DEFAULT '', backup_uri TEXT NOT NULL DEFAULT ''
         )""")
         createProviderTable(db)
     }
@@ -44,14 +48,42 @@ class LyricStore(context: Context) : SQLiteOpenHelper(context, "lyrics.db", null
             db.execSQL("ALTER TABLE tracks ADD COLUMN provider_scan TEXT NOT NULL DEFAULT ''")
             createProviderTable(db)
         }
+        if (oldVersion < 4) db.execSQL("ALTER TABLE tracks ADD COLUMN backup_uri TEXT NOT NULL DEFAULT ''")
+        if (oldVersion in 3..4) {
+            db.execSQL("ALTER TABLE provider_results ADD COLUMN fetched_at INTEGER NOT NULL DEFAULT 0")
+            db.execSQL("ALTER TABLE provider_results ADD COLUMN lookup_key TEXT NOT NULL DEFAULT ''")
+        }
+        db.execSQL(TRACKS_REBUILD_CREATE)
+        db.execSQL(TRACKS_REBUILD_COPY)
+        db.execSQL("DROP TABLE tracks")
+        db.execSQL("ALTER TABLE tracks_room RENAME TO tracks")
     }
 
     private fun createProviderTable(db: SQLiteDatabase) {
         db.execSQL("""CREATE TABLE provider_results (
             track_uri TEXT NOT NULL, provider TEXT NOT NULL, state TEXT NOT NULL,
             plain TEXT NOT NULL DEFAULT '', enhanced TEXT NOT NULL DEFAULT '',
-            review TEXT NOT NULL DEFAULT '', PRIMARY KEY (track_uri, provider)
+            review TEXT NOT NULL DEFAULT '', fetched_at INTEGER NOT NULL DEFAULT 0,
+            lookup_key TEXT NOT NULL DEFAULT '', PRIMARY KEY (track_uri, provider)
         )""")
+    }
+
+    companion object {
+        internal const val TRACKS_REBUILD_CREATE = """CREATE TABLE tracks_room (
+            uri TEXT NOT NULL PRIMARY KEY, name TEXT NOT NULL, title TEXT NOT NULL,
+            artist TEXT NOT NULL, album TEXT NOT NULL, duration_ms INTEGER NOT NULL,
+            signature TEXT NOT NULL, status TEXT NOT NULL, source TEXT NOT NULL DEFAULT '',
+            proposed TEXT NOT NULL DEFAULT '', enhanced TEXT NOT NULL DEFAULT '',
+            existing TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '',
+            review TEXT NOT NULL DEFAULT '', selected_provider TEXT NOT NULL DEFAULT '',
+            provider_scan TEXT NOT NULL DEFAULT '', backup_uri TEXT NOT NULL DEFAULT ''
+        )"""
+        internal const val TRACKS_REBUILD_COPY = """INSERT INTO tracks_room (
+            uri, name, title, artist, album, duration_ms, signature, status, source,
+            proposed, enhanced, existing, error, review, selected_provider, provider_scan, backup_uri
+        ) SELECT uri, name, title, artist, album, duration_ms, signature, status, source,
+            proposed, enhanced, existing, error, review, selected_provider, provider_scan, backup_uri
+            FROM tracks"""
     }
 
     @Synchronized fun scanned(track: LocalTrack): Boolean {
@@ -66,8 +98,10 @@ class LyricStore(context: Context) : SQLiteOpenHelper(context, "lyrics.db", null
             put("source", ""); put("proposed", ""); put("enhanced", "")
             put("existing", track.existing); put("error", track.error); put("review", track.review)
             put("selected_provider", track.selectedProvider); put("provider_scan", track.providerScan)
+            put("backup_uri", track.backupUri.ifBlank { old?.backupUri.orEmpty() })
         }
         writableDatabase.insertWithOnConflict("tracks", null, row, SQLiteDatabase.CONFLICT_REPLACE)
+        changed()
         return true
     }
 
@@ -76,6 +110,7 @@ class LyricStore(context: Context) : SQLiteOpenHelper(context, "lyrics.db", null
             put("status", status); put("source", source); put("proposed", proposed)
             put("enhanced", enhanced); put("error", error)
         }, "uri=?", arrayOf(uri))
+        changed()
     }
 
     @Synchronized fun editMatch(uri: String, title: String, artist: String) {
@@ -86,6 +121,7 @@ class LyricStore(context: Context) : SQLiteOpenHelper(context, "lyrics.db", null
             put("selected_provider", ""); put("provider_scan", "")
         }, "uri=?", arrayOf(uri))
         writableDatabase.delete("provider_results", "track_uri=?", arrayOf(uri))
+        changed()
     }
 
     @Synchronized fun setReview(uri: String, review: String) {
@@ -100,6 +136,7 @@ class LyricStore(context: Context) : SQLiteOpenHelper(context, "lyrics.db", null
                 "track_uri=? AND provider=?", arrayOf(uri, provider))
             writableDatabase.setTransactionSuccessful()
         } finally { writableDatabase.endTransaction() }
+        changed()
     }
 
     @Synchronized fun clearCandidateLookup(uri: String) {
@@ -109,15 +146,7 @@ class LyricStore(context: Context) : SQLiteOpenHelper(context, "lyrics.db", null
             put("source", ""); put("proposed", ""); put("enhanced", "")
             put("review", ""); put("status", "new"); put("error", "")
         }, "uri=?", arrayOf(uri))
-    }
-
-    @Synchronized fun setProviderScan(uri: String, key: String) {
-        writableDatabase.update("tracks", ContentValues().apply { put("provider_scan", key) },
-            "uri=?", arrayOf(uri))
-    }
-
-    @Synchronized fun invalidateProviderScans() {
-        writableDatabase.update("tracks", ContentValues().apply { put("provider_scan", "") }, null, null)
+        changed()
     }
 
     @Synchronized fun setCandidate(uri: String, candidate: ProviderCandidate) {
@@ -125,7 +154,10 @@ class LyricStore(context: Context) : SQLiteOpenHelper(context, "lyrics.db", null
             put("track_uri", uri); put("provider", candidate.source.name)
             put("state", candidate.state); put("plain", candidate.plain)
             put("enhanced", candidate.enhanced); put("review", candidate.review)
+            put("fetched_at", candidate.fetchedAt.takeIf { it > 0 } ?: System.currentTimeMillis())
+            put("lookup_key", candidate.lookupKey)
         }, SQLiteDatabase.CONFLICT_REPLACE)
+        changed()
     }
 
     @Synchronized fun candidates(uri: String): List<ProviderCandidate> {
@@ -140,7 +172,9 @@ class LyricStore(context: Context) : SQLiteOpenHelper(context, "lyrics.db", null
                         cursor.getString(cursor.getColumnIndexOrThrow("state")),
                         cursor.getString(cursor.getColumnIndexOrThrow("plain")),
                         cursor.getString(cursor.getColumnIndexOrThrow("enhanced")),
-                        cursor.getString(cursor.getColumnIndexOrThrow("review"))))
+                        cursor.getString(cursor.getColumnIndexOrThrow("review")),
+                        cursor.getLong(cursor.getColumnIndexOrThrow("fetched_at")),
+                        cursor.getString(cursor.getColumnIndexOrThrow("lookup_key"))))
                 }
             }
         }
@@ -158,6 +192,7 @@ class LyricStore(context: Context) : SQLiteOpenHelper(context, "lyrics.db", null
             put("enhanced", candidate.enhanced); put("review", candidate.review)
             put("selected_provider", source.name); put("error", "")
         }, "uri=?", arrayOf(uri))
+        changed()
         return get(uri) ?: error("Could not load selected lyrics")
     }
 
@@ -168,11 +203,42 @@ class LyricStore(context: Context) : SQLiteOpenHelper(context, "lyrics.db", null
     @Synchronized fun delete(uri: String) {
         writableDatabase.delete("tracks", "uri=?", arrayOf(uri))
         writableDatabase.delete("provider_results", "track_uri=?", arrayOf(uri))
+        changed()
+    }
+
+    @Synchronized fun clearBackup(uri: String) {
+        writableDatabase.update("tracks", ContentValues().apply { put("backup_uri", "") },
+            "uri=?", arrayOf(uri))
+        changed()
+    }
+
+    @Synchronized fun editProposed(uri: String, plain: String, enhanced: String) {
+        StandardLyricsField.requireLyrics(plain)
+        writableDatabase.update("tracks", ContentValues().apply {
+            put("proposed", plain); put("enhanced", enhanced)
+            put("source", "Edited"); put("selected_provider", "")
+            put("review", ""); put("status", "ready"); put("error", "")
+        }, "uri=?", arrayOf(uri))
+        changed()
+    }
+
+    @Synchronized fun recordWrite(track: LocalTrack, outcome: ApprovedWriter.Outcome) {
+        if (!outcome.replaced) {
+            update(track.uri, "ready", track.source, track.proposed, track.enhanced, outcome.message)
+            return
+        }
+        val saved = candidates(track.uri)
+        scanned(track.copy(uri = outcome.uri, name = outcome.name, signature = outcome.signature,
+            status = "applied", existing = track.proposed, backupUri = outcome.backupUri))
+        saved.forEach { setCandidate(outcome.uri, it) }
+        update(outcome.uri, "applied", track.source, track.proposed, track.enhanced)
+        if (outcome.uri != track.uri) delete(track.uri)
     }
 
     @Synchronized fun clear() {
         writableDatabase.delete("tracks", null, null)
         writableDatabase.delete("provider_results", null, null)
+        changed()
     }
 
     @Synchronized fun removeMissing(seen: Set<String>) {
@@ -200,5 +266,6 @@ class LyricStore(context: Context) : SQLiteOpenHelper(context, "lyrics.db", null
         review = getString(getColumnIndexOrThrow("review")),
         selectedProvider = getString(getColumnIndexOrThrow("selected_provider")),
         providerScan = getString(getColumnIndexOrThrow("provider_scan")),
+        backupUri = getString(getColumnIndexOrThrow("backup_uri")),
     )
 }

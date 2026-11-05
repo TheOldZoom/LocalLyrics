@@ -1,0 +1,353 @@
+package com.music.lyricsapp
+
+import android.content.Intent
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.net.Uri
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
+import androidx.activity.compose.setContent
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Slider
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.music.lyricsapp.core.LrcLib
+import com.music.lyricsapp.core.LyricsSource
+import com.music.lyricsapp.core.toEnhancedLrc
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+internal enum class TrackFilter(val titleRes: Int) {
+    ALL(R.string.filter_all), REVIEW(R.string.filter_to_review),
+    CORRECT(R.string.filter_correct), WRONG(R.string.filter_wrong),
+    IN_FILE(R.string.filter_in_file), NEEDS_HELP(R.string.filter_needs_help)
+}
+
+private enum class TrackSort(val titleRes: Int) {
+    TITLE(R.string.sort_title), ARTIST(R.string.sort_artist),
+    DURATION(R.string.sort_duration), STATUS(R.string.sort_status)
+}
+
+internal fun LocalTrack.inFilter(filter: TrackFilter): Boolean = when (filter) {
+    TrackFilter.ALL -> true
+    TrackFilter.REVIEW -> proposed.isNotBlank() && review.isBlank() && status != "dismissed"
+    TrackFilter.CORRECT -> review == "correct"
+    TrackFilter.WRONG -> review == "wrong"
+    TrackFilter.IN_FILE -> existing.isNotBlank()
+    TrackFilter.NEEDS_HELP -> status in setOf("miss", "error", "metadata_error", "unsupported")
+}
+
+@Composable internal fun LocalTrack.displayStatus(): Pair<String, Color> = when {
+    review == "wrong" -> stringResource(R.string.status_marked_wrong) to SoftCoral
+    review == "correct" -> stringResource(R.string.status_marked_correct) to SeaGlass
+    status == "applied" -> stringResource(R.string.status_added_review) to WarmGold
+    status == "ready" -> stringResource(R.string.status_fetched_review) to WarmGold
+    status == "existing" -> stringResource(R.string.filter_in_file) to SeaGlass
+    status == "miss" -> stringResource(R.string.status_no_match) to MutedBlue
+    status == "error" -> stringResource(R.string.status_needs_attention) to SoftCoral
+    status == "metadata_error" -> stringResource(R.string.status_unsafe_metadata) to SoftCoral
+    status == "unsupported" -> stringResource(R.string.status_unsupported) to MutedBlue
+    status == "dismissed" -> stringResource(R.string.status_dismissed) to MutedBlue
+    else -> stringResource(R.string.status_searching) to MutedBlue
+}
+
+@Composable
+internal fun NeedsAttentionScreen(
+    artifacts: List<RecoveryManager.Artifact>, backupDays: Int, message: String, busy: Boolean,
+    onBack: () -> Unit, onRefresh: () -> Unit,
+    onRestore: (RecoveryManager.Artifact) -> Unit,
+    onDelete: (RecoveryManager.Artifact) -> Unit,
+    onCleanup: () -> Unit, onClearMessage: () -> Unit,
+) {
+    LazyColumn(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding(),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(20.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                TextButton(onClick = onBack) { Text(stringResource(R.string.library)) }
+                Text(stringResource(R.string.ui_needs_attention), style = MaterialTheme.typography.headlineMedium)
+                Text(stringResource(R.string.ui_these_files_were_kept_for_recovery_after_a_write),
+                    color = MutedBlue)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = onRefresh, enabled = !busy) { Text(stringResource(R.string.refresh)) }
+                    if (backupDays > 0) OutlinedButton(onClick = onCleanup, enabled = !busy) {
+                        Text(stringResource(R.string.clean_up_after_backupdays_days, backupDays))
+                    }
+                }
+                if (message.isNotBlank()) MessageBanner(message, onClearMessage)
+            }
+        }
+        if (artifacts.isEmpty()) item { Text(stringResource(R.string.ui_no_recovery_files_found), color = MutedBlue) }
+        items(artifacts, key = { it.uri }) { artifact ->
+            Surface(color = CardBlue, shape = RoundedCornerShape(16.dp)) {
+                Column(Modifier.fillMaxWidth().padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(artifact.name, fontWeight = FontWeight.SemiBold)
+                    Text("${if (artifact.kind == RecoveryManager.Kind.BACKUP) "Original backup" else "Tagged copy"} · ${artifact.size} bytes",
+                        color = MutedBlue, style = MaterialTheme.typography.bodySmall)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (artifact.kind == RecoveryManager.Kind.BACKUP) {
+                            OutlinedButton(onClick = { onRestore(artifact) }, enabled = !busy) {
+                                Text(stringResource(R.string.restore_original))
+                            }
+                        }
+                        TextButton(onClick = { onDelete(artifact) }, enabled = !busy) { Text(stringResource(R.string.delete)) }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+internal fun LibraryHome(
+    tracks: List<LocalTrack>, folder: String, autoAdd: Boolean,
+    scanProgress: LibrarySettings.ScanProgress, filter: TrackFilter, message: String, busy: Boolean,
+    onFilter: (TrackFilter) -> Unit, onPickFolder: () -> Unit, onScan: () -> Unit,
+    onSettings: () -> Unit, onAttention: () -> Unit,
+    onOpen: (LocalTrack) -> Unit, onMarkSelectedCorrect: (Set<String>) -> Unit,
+    onWriteHighConfidence: () -> Unit, onClearMessage: () -> Unit,
+) {
+    var query by remember { mutableStateOf("") }
+    var sort by remember { mutableStateOf(TrackSort.TITLE) }
+    var selecting by remember { mutableStateOf(false) }
+    var selectedUris by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var confirmBulkWrite by remember { mutableStateOf(false) }
+    val visible = remember(tracks, filter, query, sort) {
+        val matching = tracks.filter { track ->
+            track.inFilter(filter) && (query.isBlank() || listOf(track.title, track.artist,
+                track.album, track.name).any { it.contains(query.trim(), ignoreCase = true) })
+        }
+        when (sort) {
+            TrackSort.TITLE -> matching.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.title })
+            TrackSort.ARTIST -> matching.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.artist })
+            TrackSort.DURATION -> matching.sortedByDescending { it.durationMs }
+            TrackSort.STATUS -> matching.sortedWith(compareBy<LocalTrack> { it.status }.thenBy { it.title })
+        }
+    }
+    LazyColumn(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding(),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 20.dp, vertical = 18.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        item {
+            Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(stringResource(R.string.ui_lyrics), fontSize = 34.sp, fontWeight = FontWeight.Bold, color = PaleBlue)
+                        Text(stringResource(R.string.ui_your_music_with_the_words_in_view), color = MutedBlue)
+                    }
+                    TextButton(onClick = onSettings) { Text(stringResource(R.string.sources)) }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Button(onClick = onPickFolder) { Text(if (folder.isBlank()) "Choose music folder" else "Change folder") }
+                    OutlinedButton(onClick = onScan, enabled = folder.isNotBlank()) { Text(stringResource(R.string.scan)) }
+                }
+                if (folder.isNotBlank()) TextButton(onClick = onAttention) { Text(stringResource(R.string.needs_attention_recovery_files)) }
+                if (scanProgress.active) Text("Scanning library · ${scanProgress.processed} files checked",
+                    color = WarmGold, style = MaterialTheme.typography.bodySmall)
+                if (folder.isNotBlank()) {
+                    Surface(color = CardBlue, shape = RoundedCornerShape(20.dp)) {
+                        Row(Modifier.fillMaxWidth().padding(18.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                            SummaryCount(tracks.count { it.inFilter(TrackFilter.REVIEW) }, "To review", WarmGold)
+                            SummaryCount(tracks.count { it.inFilter(TrackFilter.WRONG) }, "Wrong", SoftCoral)
+                            SummaryCount(tracks.count { it.inFilter(TrackFilter.IN_FILE) }, "In files", SeaGlass)
+                        }
+                    }
+                    Text(if (autoAdd) "Automatic writing is on. Review added lyrics for mistakes."
+                        else "Automatic writing is off. Review a result before adding it.",
+                        color = MutedBlue, style = MaterialTheme.typography.bodySmall)
+                    val next = tracks.firstOrNull { it.inFilter(TrackFilter.REVIEW) }
+                    if (next != null) OutlinedButton(onClick = { onOpen(next) }) { Text(stringResource(R.string.review_next)) }
+                    OutlinedButton(onClick = { confirmBulkWrite = true }, enabled = !busy) {
+                        Text(stringResource(R.string.write_all_high_confidence))
+                    }
+                }
+                if (message.isNotBlank()) MessageBanner(message, onClearMessage)
+            }
+        }
+        if (folder.isNotBlank()) {
+            item {
+                OutlinedTextField(value = query, onValueChange = { query = it },
+                    label = { Text(stringResource(R.string.search_title_artist_album_or_file)) },
+                    singleLine = true, modifier = Modifier.fillMaxWidth())
+            }
+            item {
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(TrackSort.entries) { option ->
+                        FilterChip(selected = sort == option, onClick = { sort = option },
+                            label = { Text(stringResource(option.titleRes)) })
+                    }
+                }
+            }
+            item {
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(TrackFilter.entries) { option ->
+                        FilterChip(selected = filter == option, onClick = { onFilter(option) },
+                            label = { Text(stringResource(R.string.option_title_tracks_count_it_infilter_option,
+                                stringResource(option.titleRes), tracks.count { it.inFilter(option) })) })
+                    }
+                }
+            }
+            item {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = { selecting = !selecting; selectedUris = emptySet() }) {
+                        Text(if (selecting) "Cancel selection" else "Select tracks")
+                    }
+                    if (selecting && selectedUris.isNotEmpty()) {
+                        Button(onClick = {
+                            onMarkSelectedCorrect(selectedUris)
+                            selecting = false
+                            selectedUris = emptySet()
+                        }, enabled = !busy) { Text(stringResource(R.string.mark_selecteduris_size_correct, selectedUris.size)) }
+                    }
+                }
+            }
+        }
+        if (visible.isEmpty()) {
+            item {
+                Surface(color = CardBlue, shape = RoundedCornerShape(20.dp)) {
+                    Column(Modifier.fillMaxWidth().padding(24.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(if (folder.isBlank()) "Start with your music folder"
+                            else if (tracks.isEmpty()) "No music scanned yet"
+                            else stringResource(R.string.nothing_in_filter, stringResource(filter.titleRes).lowercase()),
+                            style = MaterialTheme.typography.titleMedium)
+                        Text(if (folder.isBlank()) "Choose a folder to find lyrics already in your files and fetch missing ones."
+                            else if (tracks.isEmpty()) "Tap Scan to look through the selected folder."
+                            else "Choose another filter to see the rest of your music.", color = MutedBlue)
+                    }
+                }
+            }
+        } else {
+            items(visible, key = { it.uri }) { track ->
+                TrackRow(track, selecting, track.uri in selectedUris,
+                    onClick = {
+                        if (selecting) selectedUris = if (track.uri in selectedUris) selectedUris - track.uri
+                            else selectedUris + track.uri
+                        else onOpen(track)
+                    })
+            }
+        }
+    }
+    if (confirmBulkWrite) AlertDialog(onDismissRequest = { confirmBulkWrite = false },
+        title = { Text(stringResource(R.string.write_high_confidence_lyrics)) },
+        text = { Text(stringResource(R.string.only_tracks_with_no_embedded_lyrics_matching_pro)) },
+        confirmButton = { Button(onClick = { confirmBulkWrite = false; onWriteHighConfidence() }) {
+            Text(stringResource(R.string.write_eligible_tracks))
+        } },
+        dismissButton = { TextButton(onClick = { confirmBulkWrite = false }) { Text(stringResource(R.string.cancel)) } })
+}
+
+@Composable
+internal fun SummaryCount(count: Int, label: String, color: Color) {
+    Column {
+        Text(count.toString(), fontSize = 27.sp, fontWeight = FontWeight.Bold, color = color)
+        Text(label, style = MaterialTheme.typography.labelMedium, color = MutedBlue)
+    }
+}
+
+@Composable
+internal fun StatusPill(track: LocalTrack) {
+    val (label, color) = track.displayStatus()
+    Surface(color = color.copy(alpha = 0.16f), shape = RoundedCornerShape(50)) {
+        Text(label, color = color, style = MaterialTheme.typography.labelMedium,
+            modifier = Modifier.padding(horizontal = 11.dp, vertical = 6.dp))
+    }
+}
+
+@Composable
+internal fun TrackRow(track: LocalTrack, selecting: Boolean, selected: Boolean, onClick: () -> Unit) {
+    val preview = remember(track.proposed, track.existing, track.error, track.status) {
+        val raw = track.proposed.ifBlank { track.existing }
+        if (raw.isNotBlank()) lyricsAsText(raw).lineSequence().firstOrNull { it.isNotBlank() }.orEmpty()
+        else track.error.ifBlank { if (track.status == "new") "Waiting for a lyric result" else "Open for details" }
+    }
+    Column(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(top = 5.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+                if (selecting) Checkbox(checked = selected, onCheckedChange = { onClick() },
+                    modifier = Modifier.semantics { contentDescription = "Select ${track.title}" })
+                Column(Modifier.weight(1f)) {
+                    Text(track.title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold,
+                        maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    Text(track.artist.ifBlank { "Unknown artist" }, color = MutedBlue,
+                        style = MaterialTheme.typography.bodyMedium, maxLines = 1)
+                }
+                Spacer(Modifier.width(10.dp))
+                StatusPill(track)
+            }
+            if (preview.isNotBlank()) Text(preview, color = PaleBlue.copy(alpha = 0.86f),
+                fontFamily = if (track.proposed.isNotBlank() || track.existing.isNotBlank()) FontFamily.Serif else FontFamily.Default,
+                fontSize = 16.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            if (track.source.isNotBlank()) Text("From ${track.source}", color = MutedBlue,
+                style = MaterialTheme.typography.labelMedium)
+        }
+        HorizontalDivider(color = MutedBlue.copy(alpha = 0.2f))
+    }
+}
+

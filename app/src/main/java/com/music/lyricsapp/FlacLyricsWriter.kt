@@ -5,12 +5,14 @@ import java.io.DataInputStream
 import java.io.File
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import com.music.lyricsapp.core.WORD_LYRICS_FIELD
 
 /** Replaces only FLAC lyrics comments, retaining every other metadata block and audio frame. */
 object FlacLyricsWriter {
     private data class Block(val type: Int, val data: ByteArray)
 
     fun write(source: File, target: File, plain: String, enhanced: String) {
+        StandardLyricsField.requireLyrics(plain)
         DataInputStream(FileInputStream(source)).use { input ->
             val magic = ByteArray(4).also { input.readFully(it) }
             require(String(magic, Charsets.US_ASCII) == "fLaC") { "Invalid FLAC header" }
@@ -65,12 +67,12 @@ object FlacLyricsWriter {
             require(count in 0..100_000) { "Invalid FLAC comment count" }
             repeat(count) {
                 val field = String(readBytes(), Charsets.UTF_8)
-                if (!field.substringBefore('=').equals("LYRICS", true) &&
-                    !field.substringBefore('=').equals("BITCHORD_LYRICS", true)) fields += field
+                if (!field.substringBefore('=').equals(StandardLyricsField.VORBIS.fieldName, true) &&
+                    !field.substringBefore('=').equals(WORD_LYRICS_FIELD, true)) fields += field
             }
         }
-        fields += "LYRICS=$plain"
-        if (enhanced.isNotBlank()) fields += "BITCHORD_LYRICS=$enhanced"
+        fields += "${StandardLyricsField.VORBIS.fieldName}=$plain"
+        if (enhanced.isNotBlank()) fields += "$WORD_LYRICS_FIELD=$enhanced"
         val out = ByteArrayOutputStream()
         fun putInt(n: Int) { out.write(n); out.write(n ushr 8); out.write(n ushr 16); out.write(n ushr 24) }
         putInt(vendor.size); out.write(vendor); putInt(fields.size)

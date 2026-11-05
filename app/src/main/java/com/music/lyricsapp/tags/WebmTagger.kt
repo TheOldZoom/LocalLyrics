@@ -1,35 +1,13 @@
 package com.music.lyricsapp.tags
 
 import com.music.lyricsapp.core.WORD_LYRICS_FIELD
+import com.music.lyricsapp.StandardLyricsField
+import java.io.File
+import java.io.FileOutputStream
+import java.io.RandomAccessFile
 
-/**
- * Appends Matroska `Tags` and `Attachments` elements — title, artist, album,
- * lyrics, cover — to an already-downloaded WebM file, in place.
- *
- * The insertion is always a plain append at the end of the file, never a
- * splice in the middle, which is what makes this simpler than [Mp4Tagger]:
- * a downloaded track is one `EBML` header followed by one `Segment`, and
- * `Tags`/`Attachments` are ordinary children of that `Segment` with nothing
- * else addressing them by absolute offset (unlike MP4's `stco`/`co64`, an
- * optional `SeekHead` records where things are, but it is advisory — a
- * player without an entry for `Tags` in it still finds the element by
- * reading on, which is exactly what appending at the end relies on).
- *
- * The one field that can need touching is `Segment`'s own size, if it
- * declared one — a WebM served as a live remux typically declares it
- * "unknown" (an all-ones size, meaning "read to the end"), in which case
- * appending needs no further change at all. A declared size is only ever
- * widened in place, keeping its original byte width, because growing that
- * width would shift the size field itself and everything after it — the
- * same offset cascade [Mp4Tagger] exists to handle, which nothing here
- * reaches for. If the value doesn't fit the existing width, or the file
- * doesn't match the single-header/single-segment shape this assumes, the
- * input comes back unchanged rather than guessed at.
- */
+/** Appends standard Matroska lyrics after validating the EBML structure. */
 object WebmTagger {
-
-    private val EBML_HEADER_ID = byteArrayOf(0x1A, 0x45, 0xDF.toByte(), 0xA3.toByte())
-    private val SEGMENT_ID = byteArrayOf(0x18, 0x53.toByte(), 0x80.toByte(), 0x67)
 
     private val ID_TAGS = byteArrayOf(0x12, 0x54, 0xC3.toByte(), 0x67)
     private val ID_TAG = byteArrayOf(0x73, 0x73)
@@ -50,71 +28,69 @@ object WebmTagger {
         title: String,
         artist: String,
         album: String?,
-        lyrics: String?,
+        lyrics: String,
         cover: ByteArray?,
         coverMime: String,
         /** The A2 form, under a name of this app's own — see [WORD_LYRICS_FIELD]. */
         wordLyrics: String? = null,
-    ): ByteArray = runCatching {
-        val working = bytes.copyOf()
-        neutralizeOldLyrics(working)
-        insert(working, buildTail(title, artist, album, lyrics, cover, coverMime, wordLyrics))
-    }.getOrDefault(bytes)
-
-    private fun neutralizeOldLyrics(bytes: ByteArray) {
-        for (name in listOf("LYRICS", WORD_LYRICS_FIELD)) {
-            val needle = name.toByteArray(Charsets.US_ASCII)
-            var at = 3
-            while (at + needle.size <= bytes.size) {
-                if (bytes[at - 3] == ID_TAGNAME[0] && bytes[at - 2] == ID_TAGNAME[1] &&
-                    (bytes[at - 1].toInt() and 0x7F) == needle.size &&
-                    bytes.regionMatches(at, needle)
-                ) {
-                    bytes[at] = 'X'.code.toByte()
-                    at += needle.size
-                } else at++
-            }
-        }
-    }
-
-    private fun insert(bytes: ByteArray, tail: ByteArray): ByteArray {
-        if (tail.isEmpty()) return bytes
-        if (bytes.size < 16 || !bytes.regionMatches(0, EBML_HEADER_ID)) return bytes
-
-        val headerSize = readSize(bytes, EBML_HEADER_ID.size) ?: return bytes
-        val segmentIdOffset = EBML_HEADER_ID.size + headerSize.width + headerSize.value.toInt()
-        if (segmentIdOffset + 4 > bytes.size || !bytes.regionMatches(segmentIdOffset, SEGMENT_ID)) return bytes
-
-        val segmentSize = readSize(bytes, segmentIdOffset + SEGMENT_ID.size) ?: return bytes
-        val segmentContentStart = segmentIdOffset + SEGMENT_ID.size + segmentSize.width
-
-        if (segmentSize.isUnknown) {
+    ): ByteArray {
+        StandardLyricsField.requireLyrics(lyrics)
+        return runCatching {
+            val tail = buildTail(title, artist, album, lyrics, cover, coverMime, wordLyrics)
+            val layout = WebmLayout.inspect(bytes)
+            val newSize = layout.sizeAfter(tail.size.toLong())
+            require(bytes.size.toLong() + tail.size <= Int.MAX_VALUE) { "WebM is too large for byte-array tagging" }
             val out = bytes.copyOf(bytes.size + tail.size)
             tail.copyInto(out, bytes.size)
-            return out
+            layout.oldLyricNames.forEach { out[it.toInt()] = 'X'.code.toByte() }
+            if (!layout.unknownSize) writeVint(out, layout.sizeAt.toInt(), newSize, layout.sizeWidth)
+            out
+        }.getOrDefault(bytes)
+    }
+
+    /** Copies audio and attachments in chunks; only validated tag names and Segment size change. */
+    fun tagFile(
+        source: File, target: File, title: String, artist: String, album: String?,
+        lyrics: String, cover: ByteArray?, coverMime: String, wordLyrics: String? = null,
+    ) {
+        StandardLyricsField.requireLyrics(lyrics)
+        require(source.canonicalFile != target.canonicalFile) { "Source and target must differ" }
+        val tail = buildTail(title, artist, album, lyrics, cover, coverMime, wordLyrics)
+        RandomAccessFile(source, "r").use { input ->
+            val layout = WebmLayout.inspect(input)
+            val newSize = layout.sizeAfter(tail.size.toLong())
+            FileOutputStream(target).use { output ->
+                input.seek(0)
+                val buffer = ByteArray(64 * 1024)
+                while (true) {
+                    val n = input.read(buffer)
+                    if (n < 0) break
+                    output.write(buffer, 0, n)
+                }
+                output.write(tail)
+                output.fd.sync()
+            }
+            RandomAccessFile(target, "rw").use { output ->
+                layout.oldLyricNames.forEach { at ->
+                    output.seek(at)
+                    output.writeByte('X'.code)
+                }
+                if (!layout.unknownSize) {
+                    val sizeBytes = ByteArray(layout.sizeWidth)
+                    writeVint(sizeBytes, 0, newSize, layout.sizeWidth)
+                    output.seek(layout.sizeAt)
+                    output.write(sizeBytes)
+                }
+                output.fd.sync()
+            }
         }
-
-        // A declared size only matches this shape when it accounts for every
-        // byte already in the file — anything else (trailing padding, more
-        // top-level elements after Segment) isn't a layout worth guessing at.
-        val declaredEnd = segmentContentStart + segmentSize.value
-        if (declaredEnd != bytes.size.toLong()) return bytes
-
-        val newSize = segmentSize.value + tail.size
-        val maxForWidth = (1L shl (7 * segmentSize.width)) - 2
-        if (newSize > maxForWidth) return bytes
-
-        val out = bytes.copyOf(bytes.size + tail.size)
-        tail.copyInto(out, bytes.size)
-        writeVint(out, segmentIdOffset + SEGMENT_ID.size, newSize, segmentSize.width)
-        return out
     }
 
     private fun buildTail(
         title: String,
         artist: String,
         album: String?,
-        lyrics: String?,
+        lyrics: String,
         cover: ByteArray?,
         coverMime: String,
         wordLyrics: String?,
@@ -128,13 +104,13 @@ object WebmTagger {
         // `LYRICS` is Matroska's own name for the field, and `TagString` is a
         // UTF-8 element with an explicit length — so the LRC's newlines need no
         // escaping and there is no ceiling worth worrying about here.
-        if (!lyrics.isNullOrBlank()) simple += simpleTag("LYRICS", lyrics)
+        simple += simpleTag(StandardLyricsField.MATROSKA.fieldName, lyrics)
         // Beside `LYRICS`, never instead of it: a SimpleTag with a name a
         // player doesn't know is skipped, so the portable field is untouched.
         if (!wordLyrics.isNullOrBlank()) simple += simpleTag(WORD_LYRICS_FIELD, wordLyrics)
         if (simple.isNotEmpty()) {
             // An empty Targets applies the tag to the whole file — there is no
-            // track/chapter to single out in a lone-audio-stream download.
+            // track/chapter to single out in a single audio stream.
             val targets = elem(ID_TARGETS, ByteArray(0))
             val tagPayload = simple.fold(targets) { acc, s -> acc + s }
             out += elem(ID_TAGS, elem(ID_TAG, tagPayload))
@@ -164,30 +140,6 @@ object WebmTagger {
     private fun elem(id: ByteArray, payload: ByteArray): ByteArray =
         id + encodeVint(payload.size.toLong()) + payload
 
-    private class Size(val value: Long, val width: Int, val isUnknown: Boolean)
-
-    /**
-     * An EBML variable-length integer: the position of the highest set bit in
-     * the first byte gives the width (1-8 bytes), and the remaining bits
-     * across all of them are the value. A value using every one of those bits
-     * (all ones) is the reserved "unknown length" marker.
-     */
-    private fun readSize(bytes: ByteArray, offset: Int): Size? {
-        if (offset >= bytes.size) return null
-        val first = bytes[offset].toInt() and 0xFF
-        var width = 1
-        var mask = 0x80
-        while (mask != 0 && (first and mask) == 0) {
-            mask = mask shr 1
-            width++
-        }
-        if (mask == 0 || offset + width > bytes.size) return null
-        var value = (first and (mask - 1)).toLong()
-        for (i in 1 until width) value = (value shl 8) or (bytes[offset + i].toLong() and 0xFF)
-        val maxVal = (1L shl (7 * width)) - 1
-        return Size(value, width, value == maxVal)
-    }
-
     /** The narrowest vint that fits [value], reserving the all-ones value as "unknown". */
     private fun encodeVint(value: Long): ByteArray {
         var width = 1
@@ -204,9 +156,4 @@ object WebmTagger {
         bytes[offset] = (bytes[offset].toInt() or (0x80 shr (width - 1))).toByte()
     }
 
-    private fun ByteArray.regionMatches(offset: Int, other: ByteArray): Boolean {
-        if (offset < 0 || offset + other.size > size) return false
-        for (i in other.indices) if (this[offset + i] != other[i]) return false
-        return true
-    }
 }

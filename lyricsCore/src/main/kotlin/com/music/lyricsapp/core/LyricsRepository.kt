@@ -7,6 +7,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.TimeoutCancellationException
 import java.util.Collections
 import java.util.concurrent.ConcurrentHashMap
 
@@ -137,7 +139,9 @@ object LyricsRepository {
             source to async(Dispatchers.IO, start = startMode) {
                 onSourceStarted?.invoke(source)
                 try {
-                    val found = fetch(
+                    val deadline = if (source in setOf(LyricsSource.PAXSENIX_SPOTIFY,
+                            LyricsSource.PAXSENIX_MUSIXMATCH)) 18_000L else 10_000L
+                    val found = withTimeout(deadline) { fetch(
                         source,
                         videoId,
                         searchTitle,
@@ -147,9 +151,12 @@ object LyricsRepository {
                         recording,
                         hit,
                         documents::get,
-                    )?.let { result(source, it) }
+                    ) }?.let { result(source, it) }
                     onSourceResult?.invoke(source, found)
                     found
+                } catch (timeout: TimeoutCancellationException) {
+                    onSourceFailure?.invoke(source, timeout)
+                    null
                 } catch (cancelled: CancellationException) {
                     onSourceCancelled?.invoke(source)
                     throw cancelled
