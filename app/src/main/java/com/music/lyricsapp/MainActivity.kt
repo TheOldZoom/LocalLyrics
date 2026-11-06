@@ -136,8 +136,9 @@ private fun LyricsScreen(onThemeChanged: () -> Unit) {
             .map { track -> pendingReviews[track.uri]?.let { track.copy(review = it) } ?: track }
     }
     LaunchedEffect(tracks) {
+        val reviewsByUri = tracks.associate { it.uri to it.review }
         pendingReviews = pendingReviews.filter { (uri, review) ->
-            tracks.firstOrNull { it.uri == uri }?.review != review
+            reviewsByUri[uri] != review
         }
     }
     val scanProgress by LibrarySettings.scanProgress.collectAsStateWithLifecycle()

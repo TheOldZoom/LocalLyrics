@@ -69,7 +69,7 @@ internal object MediaLibrary {
                 if (stopped()) return
                 val id = cursor.number(MediaStore.Audio.Media._ID)
                 val volume = if (Build.VERSION.SDK_INT >= 29) cursor.string(MediaStore.Audio.Media.VOLUME_NAME) else ""
-                val uri = if (Build.VERSION.SDK_INT >= 29 && volume.isNotBlank())
+                val uri = if (Build.VERSION.SDK_INT >= 30 && volume.isNotBlank())
                     MediaStore.Audio.Media.getContentUri(volume, id)
                 else ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, id)
                 val name = cursor.string(MediaStore.Audio.Media.DISPLAY_NAME)

@@ -8,6 +8,7 @@ import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -37,6 +38,9 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -70,6 +74,7 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.runtime.saveable.rememberSaveable
 import com.music.lyricsapp.core.LrcLib
 import com.music.lyricsapp.core.LyricsSource
 import com.music.lyricsapp.core.toEnhancedLrc
@@ -181,6 +186,9 @@ internal fun LibraryHome(
 ) {
     var query by remember { mutableStateOf("") }
     var sort by remember { mutableStateOf(TrackSort.TITLE) }
+    var sortMenu by remember { mutableStateOf(false) }
+    var selectedAlbum by rememberSaveable { mutableStateOf<String?>(null) }
+    BackHandler(selectedAlbum != null) { selectedAlbum = null }
     var selecting by remember { mutableStateOf(false) }
     var selectedUris by remember { mutableStateOf<Set<String>>(emptySet()) }
     var confirmBulkWrite by remember { mutableStateOf(false) }
@@ -196,6 +204,12 @@ internal fun LibraryHome(
             TrackSort.STATUS -> matching.sortedWith(compareBy<LocalTrack> { it.status }.thenBy { it.title })
         }
     }
+    val albums = remember(visible) {
+        visible.groupBy { track ->
+            "${track.album.ifBlank { "\u0000" }.lowercase()}\u0001${track.artist.lowercase()}"
+        }.toList().sortedBy { (_, songs) -> songs.first().album.ifBlank { "\uffff" }.lowercase() }
+    }
+    val albumTracks = albums.firstOrNull { it.first == selectedAlbum }?.second.orEmpty()
     LazyColumn(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding(),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 20.dp, vertical = 18.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -203,26 +217,35 @@ internal fun LibraryHome(
             Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
-                        Text(stringResource(R.string.ui_lyrics), fontSize = 34.sp, fontWeight = FontWeight.Bold, color = PaleBlue)
-                        Text(stringResource(R.string.ui_your_music_with_the_words_in_view), color = MutedBlue)
+                        if (selectedAlbum != null) TextButton(onClick = { selectedAlbum = null }) {
+                            Text(stringResource(R.string.back_to_albums))
+                        }
+                        Text(if (selectedAlbum == null) stringResource(R.string.your_albums)
+                            else albumTracks.firstOrNull()?.album?.ifBlank { stringResource(R.string.unknown_album) }
+                                ?: stringResource(R.string.unknown_album),
+                            style = MaterialTheme.typography.headlineLarge, color = PaleBlue)
+                        Text(if (selectedAlbum == null) stringResource(R.string.ui_your_music_with_the_words_in_view)
+                            else stringResource(R.string.album_track_count, albumTracks.size), color = MutedBlue)
                     }
-                    TextButton(onClick = onSettings) { Text(stringResource(R.string.sources)) }
+                    if (selectedAlbum == null) IconButton(onClick = onSettings) {
+                        Text("⚙", modifier = Modifier.semantics { contentDescription = "Settings" })
+                    }
                 }
-                if (!mediaAccess) Button(onClick = onRequestMedia) {
+                if (selectedAlbum == null && !mediaAccess) Button(onClick = onRequestMedia) {
                     Text(stringResource(R.string.media_library_permission))
                 }
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (selectedAlbum == null) Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     Button(onClick = onPickFolder) { Text(if (folder.isBlank()) "Choose music folder" else "Change folder") }
                     OutlinedButton(onClick = onScan, enabled = folder.isNotBlank() || mediaAccess) { Text(stringResource(R.string.scan)) }
                 }
-                if (!mediaAccess) Text(stringResource(R.string.media_library_permission_explanation),
+                if (selectedAlbum == null && !mediaAccess) Text(stringResource(R.string.media_library_permission_explanation),
                     style = MaterialTheme.typography.bodySmall, color = MutedBlue)
-                TextButton(onClick = onAttention) { Text(stringResource(R.string.needs_attention_recovery_files)) }
+                if (selectedAlbum == null) TextButton(onClick = onAttention) { Text(stringResource(R.string.needs_attention_recovery_files)) }
                 if (scanProgress.active || scanProgress.discovered > 0) Text(
                     (if (scanProgress.active) stringResource(R.string.scanning) + " · " else "") +
                         stringResource(R.string.scan_counts, scanProgress.discovered, scanProgress.inspected),
                     color = WarmGold, style = MaterialTheme.typography.bodySmall)
-                if (folder.isNotBlank() || mediaAccess) {
+                if (selectedAlbum == null && (folder.isNotBlank() || mediaAccess)) {
                     Surface(color = CardBlue, shape = RoundedCornerShape(20.dp)) {
                         Row(Modifier.fillMaxWidth().padding(18.dp), horizontalArrangement = Arrangement.SpaceBetween) {
                             SummaryCount(tracks.count { it.inFilter(TrackFilter.REVIEW) }, "To review", WarmGold)
@@ -245,16 +268,21 @@ internal fun LibraryHome(
             }
         }
         if (folder.isNotBlank() || mediaAccess) {
-            item {
+            if (selectedAlbum == null) item {
                 OutlinedTextField(value = query, onValueChange = { query = it },
                     label = { Text(stringResource(R.string.search_title_artist_album_or_file)) },
                     singleLine = true, modifier = Modifier.fillMaxWidth())
             }
-            item {
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(TrackSort.entries) { option ->
-                        FilterChip(selected = sort == option, onClick = { sort = option },
-                            label = { Text(stringResource(option.titleRes)) })
+            if (selectedAlbum == null) item {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    androidx.compose.material3.TextButton(onClick = { sortMenu = true }) {
+                        Text(stringResource(R.string.sort_by, stringResource(sort.titleRes)))
+                    }
+                    DropdownMenu(expanded = sortMenu, onDismissRequest = { sortMenu = false }) {
+                        TrackSort.entries.forEach { option ->
+                            DropdownMenuItem(text = { Text(stringResource(option.titleRes)) },
+                                onClick = { sort = option; sortMenu = false })
+                        }
                     }
                 }
             }
@@ -267,7 +295,7 @@ internal fun LibraryHome(
                     }
                 }
             }
-            item {
+            if (selectedAlbum == null) item {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     TextButton(onClick = { selecting = !selecting; selectedUris = emptySet() }) {
                         Text(if (selecting) "Cancel selection" else "Select tracks")
@@ -296,8 +324,29 @@ internal fun LibraryHome(
                     }
                 }
             }
+        } else if (selectedAlbum == null && query.isBlank()) {
+            items(albums, key = { it.first }) { (key, songs) ->
+                val first = songs.first()
+                Surface(onClick = { selectedAlbum = key },
+                    color = MaterialTheme.colorScheme.surfaceContainer,
+                    shape = MaterialTheme.shapes.large) {
+                    Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        ArtworkTile(first.album.ifBlank { first.artist }, Modifier.size(72.dp), first.uri)
+                        Spacer(Modifier.width(14.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(first.album.ifBlank { stringResource(R.string.unknown_album) },
+                                style = MaterialTheme.typography.titleMedium, maxLines = 2,
+                                overflow = TextOverflow.Ellipsis)
+                            Text(first.artist.ifBlank { stringResource(R.string.unknown_artist) },
+                                color = MutedBlue, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(stringResource(R.string.album_track_count, songs.size),
+                                style = MaterialTheme.typography.bodySmall, color = MutedBlue)
+                        }
+                    }
+                }
+            }
         } else {
-            items(visible, key = { it.uri }) { track ->
+            items(if (selectedAlbum == null) visible else albumTracks, key = { it.uri }) { track ->
                 TrackRow(track, selecting, track.uri in selectedUris,
                     onClick = {
                         if (selecting) selectedUris = if (track.uri in selectedUris) selectedUris - track.uri

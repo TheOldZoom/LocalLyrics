@@ -1,5 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="section_lookup">Lookup</string>
+    <string name="section_writing">Writing</string>
+    <string name="section_backups">Backups</string>
+    <string name="draft_line_count">%1$d lines</string>
+    <string name="section_basics">Basics</string>
+    <string name="section_album">Album</string>
+    <string name="section_credits">Credits</string>
+    <string name="section_cover_art">Cover art</string>
+    <string name="your_albums">Your albums</string>
+    <string name="back_to_albums">Back to albums</string>
+    <string name="unknown_album">Unknown album</string>
+    <string name="unknown_artist">Unknown artist</string>
+    <string name="album_track_count">%1$d tracks</string>
+    <string name="sort_by">Sort: %1$s</string>
     <string name="edit_track_metadata">Edit track details</string>
     <string name="metadata_read_only_format">This format is read-only because its tags cannot be safely rewritten here.</string>
     <string name="metadata_read_failed">Could not read track details.</string>
@@ -80,7 +94,7 @@
     <string name="delete">Delete</string>
     <string name="cancel">Cancel</string>
     <string name="close">Close</string>
-    <string name="library">‹ Library</string>
+    <string name="library">Library</string>
     <string name="refresh">Refresh</string>
     <string name="clean_up_after_backupdays_days">Clean up after %1$d days</string>
     <string name="restore_original">Restore original</string>
@@ -95,7 +109,7 @@
     <string name="write_high_confidence_lyrics">Write high-confidence lyrics?</string>
     <string name="only_tracks_with_no_embedded_lyrics_matching_pro">Only tracks with no embedded lyrics, matching provider results, and strong timing evidence will be written. Every original will be kept as a restorable backup.</string>
     <string name="write_eligible_tracks">Write eligible tracks</string>
-    <string name="library_2">‹  Library</string>
+    <string name="library_2">Library</string>
     <string name="edit_lyrics_or_timing">Edit lyrics or timing</string>
     <string name="correct">Correct</string>
     <string name="wrong">Wrong</string>
