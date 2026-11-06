@@ -10,6 +10,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 
@@ -19,8 +22,9 @@ class LyricsViewModel(application: Application) : AndroidViewModel(application) 
     private val dao = LyricsRoomDatabase.get(application).lyricsDao()
     private val selectedUri = MutableStateFlow<String?>(null)
 
-    val tracks: StateFlow<List<LocalTrack>> = dao.observeTracks()
+    val tracks: StateFlow<List<LocalTrack>> = dao.observeTracks().conflate()
         .map { rows -> rows.map(TrackEntity::track) }
+        .flowOn(Dispatchers.Default)
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
     val candidates: StateFlow<List<ProviderCandidate>> = selectedUri.flatMapLatest { uri ->

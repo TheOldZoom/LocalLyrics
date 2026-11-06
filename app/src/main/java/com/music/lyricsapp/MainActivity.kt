@@ -61,6 +61,9 @@ import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.windowsizeclass.WindowWidthSizeClass
+import androidx.compose.material3.windowsizeclass.ExperimentalMaterial3WindowSizeClassApi
+import androidx.compose.material3.windowsizeclass.calculateWindowSizeClass
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
@@ -125,6 +128,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 }
+@OptIn(ExperimentalMaterial3WindowSizeClassApi::class)
 @Composable
 private fun LyricsScreen(onThemeChanged: () -> Unit) {
     val context = LocalContext.current
@@ -533,8 +537,63 @@ private fun LyricsScreen(onThemeChanged: () -> Unit) {
             popUpTo("library") { saveState = true }
         }
     }
+    val trackDetailContent: @Composable (LocalTrack, Boolean) -> Unit = { detailTrack, alongsideLibrary ->
+        TrackDetail(detailTrack, candidates, enabledSources, message, applying, reviewing,
+            onBack = {
+                selectedUri = null
+                if (!alongsideLibrary) navigation.popBackStack()
+            },
+            onSelectProvider = { selectProvider(detailTrack, it) },
+            onRefreshProviders = { refreshProviders(detailTrack) },
+            onOpenSources = { navigation.navigate("settings") },
+            onReview = { markReview(detailTrack, it) },
+            onExportFetched = { asText -> exportLyrics(detailTrack, false, asText) },
+            onExportEmbedded = { asText -> exportLyrics(detailTrack, true, asText) },
+            onApply = { applyLyrics(detailTrack) },
+            onEditLyrics = { plain, enhanced ->
+                if (!applying && !reviewing) scope.launch {
+                    reviewing = true
+                    try {
+                        withContext(Dispatchers.IO) {
+                            LyricStore(context).use { it.editProposed(detailTrack.uri, plain, enhanced) }
+                        }
+                        message = "Edited lyrics saved as a proposal"
+                    } catch (e: Exception) {
+                        message = e.message ?: "Could not save edited lyrics"
+                    } finally { reviewing = false }
+                }
+            },
+            onOpenMaker = {
+                scope.launch {
+                    val id = UUID.randomUUID().toString()
+                    val body = detailTrack.proposed.ifBlank { detailTrack.existing }
+                    val source = detailTrack.enhanced.ifBlank { body }
+                    WorkspaceDatabase.get(context).workspaceDao().saveDraft(
+                        DraftEntity(id, detailTrack.title, detailTrack.artist,
+                            detailTrack.album, DraftFormat.encode(DraftFormat.import(source)),
+                            detailTrack.uri, origin = "Library"))
+                    openDraft(id)
+                }
+            },
+            onOpenMetadata = { navigation.navigate("metadata") },
+            onRestore = { restoreOriginal(detailTrack) },
+            onNextReview = {
+                val next = tracks.firstOrNull { it.uri != detailTrack.uri &&
+                    it.inFilter(TrackFilter.REVIEW) }
+                if (next != null) selectedUri = next.uri
+                else {
+                    selectedUri = null
+                    if (!alongsideLibrary) navigation.popBackStack()
+                }
+            },
+            onRetry = { title, artist -> retry(detailTrack, title, artist) },
+            onDismiss = { dismiss(detailTrack) },
+            onClearMessage = { message = "" })
+    }
     BoxWithConstraints(Modifier.fillMaxSize()) {
-        val wide = maxWidth >= 600.dp
+        val wide = calculateWindowSizeClass(context as Activity).widthSizeClass !=
+            WindowWidthSizeClass.Compact && maxWidth >= 600.dp
+        val twoPane = wide && maxWidth >= 1000.dp
         Scaffold(bottomBar = {
             if (!wide) NavigationBar {
                 tabs.forEachIndexed { index, (route, label) ->
@@ -555,6 +614,8 @@ private fun LyricsScreen(onThemeChanged: () -> Unit) {
                 NavHost(navController = navigation, startDestination = "library",
                     modifier = Modifier.weight(1f)) {
         composable("library") {
+            Row(Modifier.fillMaxSize()) {
+            androidx.compose.foundation.layout.Box(Modifier.weight(if (twoPane && selectedTrack != null) 0.43f else 1f)) {
             LibraryHome(visibleTracks, folder, autoAdd, mediaAccess, scanProgress, filter, message, applying || reviewing,
                 onFilter = { filter = it },
                 onPickFolder = { folderPicker.launch(null) },
@@ -562,61 +623,23 @@ private fun LyricsScreen(onThemeChanged: () -> Unit) {
                 onScan = { LibrarySettings.scanNow(context); message = "Scanning music" },
                 onSettings = { navigation.navigate("settings") },
                 onAttention = { refreshArtifacts(); navigation.navigate("attention") },
-                onOpen = { selectedUri = it.uri; navigation.navigate("track") },
+                onOpen = { selectedUri = it.uri; if (!twoPane) navigation.navigate("track") },
                 onMarkSelectedCorrect = markSelectedCorrect,
                 onWriteHighConfidence = writeHighConfidence,
                 onClearMessage = { message = "" })
+            }
+            if (twoPane && selectedTrack != null) {
+                androidx.compose.material3.VerticalDivider()
+                androidx.compose.foundation.layout.Box(Modifier.weight(0.57f)) {
+                    trackDetailContent(selectedTrack, true)
+                }
+            }
+            }
         }
         composable("track") {
             if (selectedTrack == null) {
                 TextButton(onClick = { navigation.popBackStack() }) { Text(stringResource(R.string.return_to_library)) }
-            } else {
-                TrackDetail(selectedTrack, candidates, enabledSources, message, applying, reviewing,
-                    onBack = { selectedUri = null; navigation.popBackStack() },
-                    onSelectProvider = { selectProvider(selectedTrack, it) },
-                    onRefreshProviders = { refreshProviders(selectedTrack) },
-                    onOpenSources = { navigation.navigate("settings") },
-                    onReview = { markReview(selectedTrack, it) },
-                    onExportFetched = { asText -> exportLyrics(selectedTrack, false, asText) },
-                    onExportEmbedded = { asText -> exportLyrics(selectedTrack, true, asText) },
-                    onApply = { applyLyrics(selectedTrack) },
-                    onEditLyrics = { plain, enhanced ->
-                        if (!applying && !reviewing) scope.launch {
-                            reviewing = true
-                            try {
-                                withContext(Dispatchers.IO) {
-                                    LyricStore(context).use { it.editProposed(selectedTrack.uri, plain, enhanced) }
-                                }
-                                message = "Edited lyrics saved as a proposal"
-                            } catch (e: Exception) {
-                                message = e.message ?: "Could not save edited lyrics"
-                            } finally { reviewing = false }
-                        }
-                    },
-                    onOpenMaker = {
-                        scope.launch {
-                            val id = UUID.randomUUID().toString()
-                            val body = selectedTrack.proposed.ifBlank { selectedTrack.existing }
-                            val source = selectedTrack.enhanced.ifBlank { body }
-                            WorkspaceDatabase.get(context).workspaceDao().saveDraft(
-                                DraftEntity(id, selectedTrack.title, selectedTrack.artist,
-                                    selectedTrack.album, DraftFormat.encode(DraftFormat.import(source)),
-                                    selectedTrack.uri, origin = "Library"))
-                            openDraft(id)
-                        }
-                    },
-                    onOpenMetadata = { navigation.navigate("metadata") },
-                    onRestore = { restoreOriginal(selectedTrack) },
-                    onNextReview = {
-                        val next = tracks.firstOrNull { it.uri != selectedTrack.uri &&
-                            it.inFilter(TrackFilter.REVIEW) }
-                        if (next != null) selectedUri = next.uri
-                        else { selectedUri = null; navigation.popBackStack() }
-                    },
-                    onRetry = { title, artist -> retry(selectedTrack, title, artist) },
-                    onDismiss = { dismiss(selectedTrack) },
-                    onClearMessage = { message = "" })
-            }
+            } else trackDetailContent(selectedTrack, false)
         }
         composable("metadata") {
             if (selectedTrack == null) {
