@@ -22,3 +22,9 @@ The library should feel like a music collection: album artwork leads, track stat
 ## Performance and safety
 
 Room already emits cached tracks, but the UI re-filters the full collection on state changes and artwork extraction opens audio files. Measure startup and scan timing; make cached albums visible immediately, move only read work off the main thread, and retain current signatures, lyric reads and all write safeguards. Verify at 360dp / 200% font scale, landscape, RTL, TalkBack and reduced motion.
+
+## Implementation and verification
+
+Album browsing, wide-screen track detail, shared visual components, grouped settings, compact Maker editing, and aligned provider states are implemented. Artwork extraction no longer holds a global lock; track mapping, filtering, sorting, and album grouping now run away from the Compose thread. The write and recovery paths remain unchanged.
+
+The build, unit tests, lint, and Android test APK are checked by Gradle. Instrumented layout tests cover album navigation, lyrics with Arabic text, and the Settings Save action at 360dp and 200% text. Run those tests on a device or emulator before release, then inspect the remaining screens in portrait and landscape with TalkBack and reduced motion. No Android device or emulator is attached to this workspace, so runtime layout checks and scan timing measurements cannot be recorded here.

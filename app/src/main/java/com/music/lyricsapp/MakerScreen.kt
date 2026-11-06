@@ -15,11 +15,13 @@ import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -27,6 +29,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -34,6 +37,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.LargeTopAppBar
@@ -47,6 +52,12 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarResult
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
@@ -94,6 +105,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.flow.map
 import java.util.UUID
 
 @Composable
@@ -213,12 +225,19 @@ internal fun DraftShelf(onOpen: (String) -> Unit) {
 internal fun MakerEditor(draftId: String, onBack: () -> Unit) {
     val context = LocalContext.current
     val dao = remember { WorkspaceDatabase.get(context).workspaceDao() }
-    val fromRoom by remember(draftId) { dao.observeDraft(draftId) }
-        .collectAsStateWithLifecycle(initialValue = null)
-    val initial = fromRoom
-    if (initial == null) {
+    val draftState by remember(draftId) { dao.observeDraft(draftId).map { it to true } }
+        .collectAsStateWithLifecycle(initialValue = null to false)
+    val initial = draftState.first
+    if (!draftState.second) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Text(stringResource(R.string.loading_draft))
+        }
+        return
+    }
+    if (initial == null) {
+        EmptyState(stringResource(R.string.draft_missing),
+            stringResource(R.string.draft_missing_hint)) {
+            TextButton(onClick = onBack) { Text(stringResource(R.string.maker)) }
         }
         return
     }
@@ -240,6 +259,7 @@ private fun MakerEditorContent(initial: DraftEntity, dao: WorkspaceDao, onBack: 
     var selectedLine by remember(initial.id) { mutableStateOf(0) }
     var exportBody by remember { mutableStateOf("") }
     var exportName by remember { mutableStateOf("") }
+    var exportMenu by remember { mutableStateOf(false) }
     var undoStack by remember(initial.id) { mutableStateOf<List<Pair<DraftEntity, List<DraftLine>>>>(emptyList()) }
     var redoStack by remember(initial.id) { mutableStateOf<List<Pair<DraftEntity, List<DraftLine>>>>(emptyList()) }
     val currentDraft by rememberUpdatedState(draft.copy(linesJson = DraftFormat.encode(lines)))
@@ -367,7 +387,8 @@ private fun MakerEditorContent(initial: DraftEntity, dao: WorkspaceDao, onBack: 
 
     Box(Modifier.fillMaxSize()) {
     Column(Modifier.fillMaxSize()) {
-        CenterAlignedTopAppBar(title = { Text(stringResource(R.string.lyric_draft)) },
+        CenterAlignedTopAppBar(title = { Text(stringResource(R.string.lyric_draft),
+            maxLines = 1, overflow = TextOverflow.Ellipsis) },
             windowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0),
             navigationIcon = { TextButton(onClick = {
                 scope.launch { dao.saveDraft(currentDraft); onBack() }
@@ -473,15 +494,28 @@ private fun MakerEditorContent(initial: DraftEntity, dao: WorkspaceDao, onBack: 
                                 change.consume(); swipeX += amount
                             })
                     }, color = MaterialTheme.colorScheme.surfaceContainer, shape = MaterialTheme.shapes.medium) {
-                        Column(Modifier.fillMaxWidth().padding(10.dp)) {
-                            OutlinedTextField(line.text, { value ->
+                        Row(Modifier.fillMaxWidth().padding(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text("${index + 1}", style = MaterialTheme.typography.labelMedium,
+                                color = MutedBlue)
+                            BasicTextField(line.text, { value ->
                                 updateLines(lines.toMutableList().apply {
                                     this[index] = line.copy(text = value, wordTimes = emptyList())
                                 })
-                            }, label = { Text(stringResource(R.string.line_number, index + 1)) },
-                                modifier = Modifier.fillMaxWidth())
-                            Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                                Text("⠿", modifier = Modifier.padding(12.dp)
+                            }, modifier = Modifier.weight(1f).heightIn(min = 48.dp).padding(vertical = 10.dp),
+                                maxLines = 3,
+                                textStyle = MaterialTheme.typography.bodyLarge.copy(
+                                    color = MaterialTheme.colorScheme.onSurface),
+                                cursorBrush = androidx.compose.ui.graphics.SolidColor(MaterialTheme.colorScheme.primary),
+                                decorationBox = { inner ->
+                                    androidx.compose.foundation.layout.Box {
+                                        if (line.text.isEmpty()) Text(stringResource(R.string.line_number, index + 1),
+                                            color = MutedBlue)
+                                        inner()
+                                    }
+                                })
+                                Text("⠿", modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp).padding(12.dp)
                                     .pointerInput(line.id, lines) {
                                         detectDragGesturesAfterLongPress(
                                             onDragEnd = {
@@ -500,10 +534,10 @@ private fun MakerEditorContent(initial: DraftEntity, dao: WorkspaceDao, onBack: 
                                             CustomAccessibilityAction(moveUpLabel) { moveLine(-1) },
                                             CustomAccessibilityAction(moveDownLabel) { moveLine(1) })
                                     })
-                                TextButton(onClick = ::deleteLine) {
-                                    Text(stringResource(R.string.delete))
+                                IconButton(onClick = ::deleteLine) {
+                                    Icon(Icons.Outlined.Delete,
+                                        contentDescription = stringResource(R.string.delete))
                                 }
-                            }
                         }
                     }
                 }
@@ -573,36 +607,52 @@ private fun MakerEditorContent(initial: DraftEntity, dao: WorkspaceDao, onBack: 
                     if (!readyForLrc) Text(stringResource(R.string.complete_lrc_hint),
                         color = MutedBlue, style = MaterialTheme.typography.bodySmall)
                     if (message.isNotBlank()) MessageBanner(message) { message = "" }
-                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(onClick = { audioPicker.launch(arrayOf("audio/*")) }) {
-                            Text(stringResource(R.string.attach_audio))
-                        }
-                        OutlinedButton(onClick = {
-                            exportBody = DraftFormat.portable(draft.title, draft.artist, lines)
-                            exportName = "${draft.title.ifBlank { "lyrics" }}.lrc"
-                            exportPicker.launch(exportName)
-                        }, enabled = readyForLrc) { Text(stringResource(R.string.export_lrc)) }
-                        OutlinedButton(onClick = {
-                            exportBody = DraftFormat.text(lines)
-                            exportPicker.launch("${draft.title.ifBlank { "lyrics" }}.txt")
-                        }, enabled = lines.isNotEmpty()) { Text(stringResource(R.string.export_txt)) }
-                        OutlinedButton(onClick = {
-                            exportBody = DraftFormat.enhanced(draft.title, draft.artist, lines)
-                            exportPicker.launch("${draft.title.ifBlank { "lyrics" }}-enhanced.lrc")
-                        }, enabled = readyForLrc && lines.any { it.wordTimes.any { time -> time != null } }) {
-                            Text(stringResource(R.string.export_enhanced))
-                        }
-                        Button(onClick = { parentPicker.launch(null) },
-                            enabled = draft.audioUri.isNotBlank() && readyForLrc) {
-                            Text(stringResource(R.string.embed_audio))
-                        }
+                }
+            }
+        }
+        Surface(color = MaterialTheme.colorScheme.surfaceContainer) {
+            FlowRow(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(onClick = { audioPicker.launch(arrayOf("audio/*")) }) {
+                    Text(stringResource(R.string.attach_audio))
+                }
+                androidx.compose.foundation.layout.Box {
+                    OutlinedButton(onClick = { exportMenu = true }, enabled = lines.isNotEmpty()) {
+                        Text(stringResource(R.string.export))
                     }
+                    DropdownMenu(expanded = exportMenu, onDismissRequest = { exportMenu = false }) {
+                        DropdownMenuItem(text = { Text(stringResource(R.string.export_txt)) },
+                            onClick = {
+                                exportMenu = false
+                                exportBody = DraftFormat.text(lines)
+                                exportPicker.launch("${draft.title.ifBlank { "lyrics" }}.txt")
+                            })
+                        DropdownMenuItem(text = { Text(stringResource(R.string.export_lrc)) },
+                            enabled = readyForLrc, onClick = {
+                                exportMenu = false
+                                exportBody = DraftFormat.portable(draft.title, draft.artist, lines)
+                                exportName = "${draft.title.ifBlank { "lyrics" }}.lrc"
+                                exportPicker.launch(exportName)
+                            })
+                        DropdownMenuItem(text = { Text(stringResource(R.string.export_enhanced)) },
+                            enabled = readyForLrc && lines.any { it.wordTimes.any { time -> time != null } },
+                            onClick = {
+                                exportMenu = false
+                                exportBody = DraftFormat.enhanced(draft.title, draft.artist, lines)
+                                exportPicker.launch("${draft.title.ifBlank { "lyrics" }}-enhanced.lrc")
+                            })
+                    }
+                }
+                Button(onClick = { parentPicker.launch(null) },
+                    enabled = draft.audioUri.isNotBlank() && readyForLrc) {
+                    Text(stringResource(R.string.embed_audio))
                 }
             }
         }
         if (mode) {
             HorizontalDivider()
-            Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+            Column(Modifier.fillMaxWidth().heightIn(max = 260.dp)
+                .verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 val active = lines.getOrNull(currentIndex)?.text ?: lines.getOrNull(selectedLine)?.text.orEmpty()
                 Text(active.ifBlank { stringResource(R.string.select_line_to_stamp) },

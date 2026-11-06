@@ -46,6 +46,9 @@ import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.Icon
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -61,6 +64,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -161,17 +165,22 @@ internal fun NeedsAttentionScreen(
                 if (message.isNotBlank()) MessageBanner(message, onClearMessage)
             }
         }
-        if (artifacts.isEmpty()) item { Text(stringResource(R.string.ui_no_recovery_files_found), color = MutedBlue) }
+        if (artifacts.isEmpty()) item {
+            EmptyState(stringResource(R.string.ui_no_recovery_files_found),
+                stringResource(R.string.recovery_empty_hint)) {
+                TextButton(onClick = onRefresh, enabled = !busy) { Text(stringResource(R.string.refresh)) }
+            }
+        }
         items(artifacts, key = { it.uri }) { artifact ->
             Surface(color = CardBlue, shape = RoundedCornerShape(16.dp)) {
                 Column(Modifier.fillMaxWidth().padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(artifact.name, fontWeight = FontWeight.SemiBold)
                     Text("${if (artifact.needsRestore) stringResource(R.string.metadata_recovery_needed)
-                        else if (artifact.kind == RecoveryManager.Kind.BACKUP) "Original backup"
-                        else "Tagged copy"} · ${artifact.size} bytes",
+                        else if (artifact.kind == RecoveryManager.Kind.BACKUP) stringResource(R.string.original_backup)
+                        else stringResource(R.string.tagged_copy)} · ${stringResource(R.string.file_size_bytes, artifact.size)}",
                         color = MutedBlue, style = MaterialTheme.typography.bodySmall)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         if (artifact.kind == RecoveryManager.Kind.BACKUP) {
                             OutlinedButton(onClick = { onRestore(artifact) }, enabled = !busy) {
                                 Text(stringResource(R.string.restore_original))
@@ -205,7 +214,8 @@ internal fun LibraryHome(
     var selecting by remember { mutableStateOf(false) }
     var selectedUris by remember { mutableStateOf<Set<String>>(emptySet()) }
     var confirmBulkWrite by remember { mutableStateOf(false) }
-    val visible = remember(tracks, filter, query, sort) {
+    val visible by produceState(initialValue = emptyList<LocalTrack>(), tracks, filter, query, sort) {
+        value = withContext(Dispatchers.Default) {
         val matching = tracks.filter { track ->
             track.inFilter(filter) && (query.isBlank() || listOf(track.title, track.artist,
                 track.album, track.name).any { it.contains(query.trim(), ignoreCase = true) })
@@ -216,11 +226,14 @@ internal fun LibraryHome(
             TrackSort.DURATION -> matching.sortedByDescending { it.durationMs }
             TrackSort.STATUS -> matching.sortedWith(compareBy<LocalTrack> { it.status }.thenBy { it.title })
         }
+        }
     }
-    val albums = remember(visible) {
-        visible.groupBy { track ->
-            "${track.album.ifBlank { "\u0000" }.lowercase()}\u0001${track.artist.lowercase()}"
-        }.toList().sortedBy { (_, songs) -> songs.first().album.ifBlank { "\uffff" }.lowercase() }
+    val albums by produceState(initialValue = emptyList<Pair<String, List<LocalTrack>>>(), visible) {
+        value = withContext(Dispatchers.Default) {
+            visible.groupBy { track ->
+                "${track.album.ifBlank { "\u0000" }.lowercase()}\u0001${track.artist.lowercase()}"
+            }.toList().sortedBy { (_, songs) -> songs.first().album.ifBlank { "\uffff" }.lowercase() }
+        }
     }
     val albumTracks = albums.firstOrNull { it.first == selectedAlbum }?.second.orEmpty()
     val settingsLabel = stringResource(R.string.ui_settings)
@@ -242,7 +255,7 @@ internal fun LibraryHome(
                             else stringResource(R.string.album_track_count, albumTracks.size), color = MutedBlue)
                     }
                     if (selectedAlbum == null) IconButton(onClick = onSettings) {
-                        Text("⚙", modifier = Modifier.semantics { contentDescription = settingsLabel })
+                        Icon(Icons.Outlined.Settings, contentDescription = settingsLabel)
                     }
                 }
                 if (selectedAlbum == null && !mediaAccess) Button(onClick = onRequestMedia) {
@@ -336,16 +349,20 @@ internal fun LibraryHome(
         }
         if (visible.isEmpty()) {
             item {
-                Surface(color = CardBlue, shape = RoundedCornerShape(20.dp)) {
-                    Column(Modifier.fillMaxWidth().padding(24.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(if (folder.isBlank() && !mediaAccess) "Start with your music folder"
-                            else if (tracks.isEmpty()) "No music scanned yet"
-                            else stringResource(R.string.nothing_in_filter, stringResource(filter.titleRes).lowercase()),
-                            style = MaterialTheme.typography.titleMedium)
-                        Text(if (folder.isBlank() && !mediaAccess) "Choose a folder to find lyrics already in your files and fetch missing ones."
-                            else if (tracks.isEmpty()) "Tap Scan to look through the selected folder."
-                            else "Choose another filter to see the rest of your music.", color = MutedBlue)
-                    }
+                val needsSource = folder.isBlank() && !mediaAccess
+                EmptyState(
+                    title = if (needsSource) stringResource(R.string.empty_library_source)
+                        else if (tracks.isEmpty()) stringResource(R.string.empty_library_scanned)
+                        else stringResource(R.string.nothing_in_filter, stringResource(filter.titleRes)),
+                    guidance = if (needsSource) stringResource(R.string.empty_library_source_hint)
+                        else if (tracks.isEmpty()) stringResource(R.string.empty_library_scan_hint)
+                        else stringResource(R.string.empty_library_filter_hint)) {
+                    TextButton(onClick = {
+                        if (needsSource) onPickFolder()
+                        else if (tracks.isEmpty()) onScan()
+                        else onFilter(TrackFilter.ALL)
+                    }) { Text(stringResource(if (needsSource) R.string.choose_music_folder
+                        else if (tracks.isEmpty()) R.string.scan else R.string.filter_all)) }
                 }
             }
         } else if (selectedAlbum == null && query.isBlank()) {
@@ -380,13 +397,12 @@ internal fun LibraryHome(
             }
         }
     }
-    if (confirmBulkWrite) AlertDialog(onDismissRequest = { confirmBulkWrite = false },
-        title = { Text(stringResource(R.string.write_high_confidence_lyrics)) },
-        text = { Text(stringResource(R.string.only_tracks_with_no_embedded_lyrics_matching_pro)) },
-        confirmButton = { Button(onClick = { confirmBulkWrite = false; onWriteHighConfidence() }) {
-            Text(stringResource(R.string.write_eligible_tracks))
-        } },
-        dismissButton = { TextButton(onClick = { confirmBulkWrite = false }) { Text(stringResource(R.string.cancel)) } })
+    if (confirmBulkWrite) ConfirmDialog(
+        title = stringResource(R.string.write_high_confidence_lyrics),
+        body = stringResource(R.string.only_tracks_with_no_embedded_lyrics_matching_pro),
+        confirmLabel = stringResource(R.string.write_eligible_tracks),
+        onConfirm = { confirmBulkWrite = false; onWriteHighConfidence() },
+        onDismiss = { confirmBulkWrite = false })
 }
 
 @Composable

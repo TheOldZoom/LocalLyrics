@@ -15,6 +15,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
@@ -122,12 +123,14 @@ internal fun SourceSettings(onClose: () -> Unit, onSaved: (Boolean) -> Unit) {
     }
     Column(Modifier.fillMaxSize()
         .padding(horizontal = 20.dp, vertical = 12.dp)) {
-        CenterAlignedTopAppBar(title = { Text(stringResource(R.string.ui_settings)) },
+        CenterAlignedTopAppBar(title = { Text(stringResource(R.string.ui_settings),
+            maxLines = 1, overflow = TextOverflow.Ellipsis) },
             windowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0),
             navigationIcon = { TextButton(onClick = onClose) { Text(stringResource(R.string.library)) } })
             Column(Modifier.weight(1f).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text(stringResource(R.string.section_lookup), style = MaterialTheme.typography.titleLarge)
+                SectionHeader(stringResource(R.string.section_lookup))
+                SettingsGroupCard {
                 Row(Modifier.fillMaxWidth().clickable { onlineLookup = !onlineLookup },
                     verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
@@ -137,7 +140,16 @@ internal fun SourceSettings(onClose: () -> Unit, onSaved: (Boolean) -> Unit) {
                     }
                     Switch(checked = onlineLookup, onCheckedChange = { onlineLookup = it })
                 }
-                Text(stringResource(R.string.section_writing), style = MaterialTheme.typography.titleLarge)
+                Row(Modifier.fillMaxWidth().clickable { wifiOnly = !wifiOnly },
+                    verticalAlignment = Alignment.CenterVertically) {
+                    Text(stringResource(R.string.ui_background_lookups_on_wi_fi_only), modifier = Modifier.weight(1f))
+                    Switch(checked = wifiOnly, onCheckedChange = { wifiOnly = it })
+                }
+                OutlinedTextField(value = key, onValueChange = { key = it },
+                    label = { Text(stringResource(R.string.paxsenix_api_key_optional)) }, modifier = Modifier.fillMaxWidth())
+                }
+                SectionHeader(stringResource(R.string.section_writing))
+                SettingsGroupCard {
                 Row(Modifier.fillMaxWidth().clickable { autoAdd = !autoAdd },
                     verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
@@ -147,9 +159,9 @@ internal fun SourceSettings(onClose: () -> Unit, onSaved: (Boolean) -> Unit) {
                     }
                     Switch(checked = autoAdd, onCheckedChange = { autoAdd = it })
                 }
-                OutlinedTextField(value = key, onValueChange = { key = it },
-                    label = { Text(stringResource(R.string.paxsenix_api_key_optional)) }, modifier = Modifier.fillMaxWidth())
-                Text(stringResource(R.string.section_backups), style = MaterialTheme.typography.titleLarge)
+                }
+                SectionHeader(stringResource(R.string.section_backups))
+                SettingsGroupCard {
                 Text(stringResource(R.string.ui_keep_original_backups_for), style = MaterialTheme.typography.titleSmall)
                 androidx.compose.foundation.layout.Box {
                     OutlinedButton(onClick = { backupMenu = true }) {
@@ -170,12 +182,9 @@ internal fun SourceSettings(onClose: () -> Unit, onSaved: (Boolean) -> Unit) {
                 }
                 Text(stringResource(R.string.ui_expired_backups_are_removed_only_when_you_choose),
                     color = MutedBlue, style = MaterialTheme.typography.bodySmall)
-                Row(Modifier.fillMaxWidth().clickable { wifiOnly = !wifiOnly },
-                    verticalAlignment = Alignment.CenterVertically) {
-                    Text(stringResource(R.string.ui_background_lookups_on_wi_fi_only), modifier = Modifier.weight(1f))
-                    Switch(checked = wifiOnly, onCheckedChange = { wifiOnly = it })
                 }
-                Text(stringResource(R.string.ui_appearance), style = MaterialTheme.typography.titleSmall)
+                SectionHeader(stringResource(R.string.ui_appearance))
+                SettingsGroupCard {
                 androidx.compose.foundation.layout.Box {
                     OutlinedButton(onClick = { themeMenu = true }) {
                         Text(stringResource(when (themeChoice) {
@@ -198,8 +207,9 @@ internal fun SourceSettings(onClose: () -> Unit, onSaved: (Boolean) -> Unit) {
                         }
                     }
                 }
+                }
                 if (saveError.isNotBlank()) Text(saveError, color = SoftCoral)
-                Text(stringResource(R.string.ui_providers), style = MaterialTheme.typography.titleSmall)
+                SectionHeader(stringResource(R.string.ui_providers))
                 Text(stringResource(R.string.ui_every_enabled_provider_is_checked_for_each_suppo),
                     color = MutedBlue, style = MaterialTheme.typography.bodySmall)
                 order.forEachIndexed { index, source ->
@@ -214,10 +224,20 @@ internal fun SourceSettings(onClose: () -> Unit, onSaved: (Boolean) -> Unit) {
                     }.padding(horizontal = 12.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
                             Text(source.label)
-                            Text(source.riskLevel, color = MutedBlue,
-                                style = MaterialTheme.typography.bodySmall)
+                            Surface(color = MaterialTheme.colorScheme.secondaryContainer,
+                                shape = MaterialTheme.shapes.small) {
+                                Text(stringResource(when (source) {
+                                    com.music.lyricsapp.core.LyricsSource.LRCLIB -> R.string.trust_lower
+                                    com.music.lyricsapp.core.LyricsSource.UNISON,
+                                    com.music.lyricsapp.core.LyricsSource.MEGALOBIZ -> R.string.trust_medium
+                                    else -> R.string.trust_higher
+                                }), modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                                    style = MaterialTheme.typography.labelSmall)
+                            }
                         }
                         Text("⠿", modifier = Modifier
+                            .sizeIn(minWidth = 48.dp, minHeight = 48.dp)
                             .padding(12.dp)
                             .pointerInput(source, order) {
                                 detectDragGesturesAfterLongPress(

@@ -1,5 +1,20 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="draft_missing">Draft not found</string>
+    <string name="draft_missing_hint">Return to Maker to choose another draft.</string>
+    <string name="recovery_empty_hint">Refresh if you recently restored or changed a music file.</string>
+    <string name="trust_lower">Lower risk</string>
+    <string name="trust_medium">Medium risk</string>
+    <string name="trust_higher">Higher risk</string>
+    <string name="original_backup">Original backup</string>
+    <string name="tagged_copy">Tagged copy</string>
+    <string name="file_size_bytes">%1$d bytes</string>
+    <string name="export">Export</string>
+    <string name="empty_library_source">Start with your music folder</string>
+    <string name="empty_library_scanned">No music scanned yet</string>
+    <string name="empty_library_source_hint">Choose a folder to find lyrics already in your files and fetch missing ones.</string>
+    <string name="empty_library_scan_hint">Tap Scan to look through the selected folder.</string>
+    <string name="empty_library_filter_hint">Choose another filter to see the rest of your music.</string>
     <string name="choose_music_folder">Choose music folder</string>
     <string name="change_music_folder">Change folder</string>
     <string name="auto_writing_on_hint">Automatic writing is on. Review added lyrics for mistakes.</string>

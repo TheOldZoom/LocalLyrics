@@ -35,6 +35,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -135,7 +136,8 @@ internal fun MetadataEditorScreen(
     }
 
     Scaffold(contentWindowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0), topBar = {
-        CenterAlignedTopAppBar(title = { Text(stringResource(R.string.edit_track_metadata)) },
+        CenterAlignedTopAppBar(title = { Text(stringResource(R.string.edit_track_metadata),
+            maxLines = 1, overflow = TextOverflow.Ellipsis) },
             windowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0),
             navigationIcon = { TextButton(onClick = onBack, enabled = !busy) {
                 Text(stringResource(R.string.cancel))
@@ -179,12 +181,12 @@ internal fun MetadataEditorScreen(
                     }
                 }
             }
-            Text(stringResource(R.string.section_basics), style = MaterialTheme.typography.titleLarge)
+            SectionHeader(stringResource(R.string.section_basics))
             field(stringResource(R.string.metadata_title), original.values.title, edited.title,
                 { edited = edited.copy(title = it) })
             field(stringResource(R.string.metadata_artist), original.values.artist, edited.artist,
                 { edited = edited.copy(artist = it) })
-            Text(stringResource(R.string.section_album), style = MaterialTheme.typography.titleLarge)
+            SectionHeader(stringResource(R.string.section_album))
             field(stringResource(R.string.metadata_album_artist), original.values.albumArtist, edited.albumArtist,
                 { edited = edited.copy(albumArtist = it) })
             field(stringResource(R.string.metadata_album), original.values.album, edited.album,
@@ -197,15 +199,15 @@ internal fun MetadataEditorScreen(
                 { edited = edited.copy(trackNumber = it) })
             field(stringResource(R.string.metadata_disc_number), original.values.discNumber, edited.discNumber,
                 { edited = edited.copy(discNumber = it) })
-            Text(stringResource(R.string.section_credits), style = MaterialTheme.typography.titleLarge)
+            SectionHeader(stringResource(R.string.section_credits))
             field(stringResource(R.string.metadata_composer), original.values.composer, edited.composer,
                 { edited = edited.copy(composer = it) })
             field(stringResource(R.string.metadata_comment), original.values.comment, edited.comment,
                 { edited = edited.copy(comment = it) }, true)
-            Text(stringResource(R.string.metadata_lyrics), style = MaterialTheme.typography.titleLarge)
+            SectionHeader(stringResource(R.string.metadata_lyrics))
             field(stringResource(R.string.metadata_lyrics), original.values.lyrics, edited.lyrics,
                 { edited = edited.copy(lyrics = it) }, true)
-            Text(stringResource(R.string.section_cover_art), style = MaterialTheme.typography.titleLarge)
+            SectionHeader(stringResource(R.string.section_cover_art))
             Text(stringResource(R.string.metadata_original_artwork,
                 if (original.coverDigest == null) stringResource(R.string.metadata_empty)
                 else stringResource(R.string.metadata_present)))
@@ -231,11 +233,10 @@ internal fun MetadataEditorScreen(
         }
     }
     }
-    if (confirm) AlertDialog(onDismissRequest = { confirm = false },
-        title = { Text(stringResource(R.string.metadata_confirm_title)) },
-        text = { Text(stringResource(R.string.metadata_confirm_body, track.name)) },
-        confirmButton = { Button(onClick = { confirm = false; save() }) {
-            Text(stringResource(R.string.save))
-        } },
-        dismissButton = { TextButton(onClick = { confirm = false }) { Text(stringResource(R.string.cancel)) } })
+    if (confirm) ConfirmDialog(
+        title = stringResource(R.string.metadata_confirm_title),
+        body = stringResource(R.string.metadata_confirm_body, track.name),
+        confirmLabel = stringResource(R.string.save),
+        onConfirm = { confirm = false; save() },
+        onDismiss = { confirm = false })
 }

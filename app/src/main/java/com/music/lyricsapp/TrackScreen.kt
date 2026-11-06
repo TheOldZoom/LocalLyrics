@@ -6,6 +6,7 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.net.Uri
 import android.os.Bundle
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -24,6 +25,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -345,7 +347,7 @@ private fun PlayerPanel(player: LocalAudioPlayer, fallbackDurationMs: Long) {
                 Button(onClick = player::toggle, enabled = player.ready) {
                     Text(if (player.playing) "Pause" else "Play")
                 }
-                Column {
+                Column(Modifier.weight(1f)) {
                     Text(stringResource(R.string.ui_listen_and_compare), style = MaterialTheme.typography.titleSmall)
                     Text(if (player.ready) "Tap a lyric line to seek" else "Preparing local audio…",
                         color = MutedBlue, style = MaterialTheme.typography.bodySmall)
@@ -409,7 +411,8 @@ private fun ProviderPicker(
                                 fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal)
                             Text(if (selected) "Selected · $state" else state,
                                 color = when (result?.review) { "wrong" -> SoftCoral; "correct" -> SeaGlass; else -> MutedBlue },
-                                style = MaterialTheme.typography.labelMedium, maxLines = 2)
+                                style = MaterialTheme.typography.labelMedium, maxLines = 2,
+                                modifier = Modifier.widthIn(max = 128.dp))
                         }
                         result?.takeIf { it.state == "found" }?.let { candidate ->
                             val preview = remember(candidate.plain) {
@@ -444,9 +447,14 @@ private fun LyricsPanel(
     val activeIndex = if (player?.ready == true) lines.indexOfLast { it.timeMs <= position } else -1
     val listState = rememberLazyListState()
     var copied by remember(raw) { mutableStateOf("") }
+    val reducedMotion = remember(context) {
+        Settings.Global.getFloat(context.contentResolver,
+            Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f
+    }
     LaunchedEffect(activeIndex, raw) {
         if (activeIndex >= 0) {
-            listState.animateScrollToItem((activeIndex - 1).coerceAtLeast(0))
+            val target = (activeIndex - 1).coerceAtLeast(0)
+            if (reducedMotion) listState.scrollToItem(target) else listState.animateScrollToItem(target)
         }
     }
     fun copy(text: String, label: String) {
@@ -464,16 +472,7 @@ private fun LyricsPanel(
             if (lines.isEmpty()) {
                 Column(Modifier.fillMaxWidth().heightIn(max = 350.dp).verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    raw.lineSequence().forEach { line ->
-                        val marker = line.trim().let { it.startsWith("[") && it.endsWith("]") }
-                        Text(line.ifBlank { " " },
-                            style = (if (marker) MaterialTheme.typography.labelLarge
-                                else MaterialTheme.typography.bodyLarge).copy(
-                                fontFamily = if (marker) FontFamily.SansSerif else FontFamily.Serif,
-                                lineHeight = if (marker) 22.sp else 28.sp,
-                                textDirection = TextDirection.ContentOrRtl),
-                            color = if (marker) SeaGlass else PaleBlue)
-                    }
+                    LyricsTextBlock(raw)
                 }
             } else {
                 LazyColumn(Modifier.fillMaxWidth().height(350.dp), state = listState,
@@ -500,7 +499,7 @@ private fun LyricsPanel(
                                 horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                                 Text(timestamp(line.timeMs), color = if (active) SeaGlass else MutedBlue,
                                     style = MaterialTheme.typography.labelMedium,
-                                    modifier = Modifier.width(43.dp).padding(top = 5.dp))
+                                    modifier = Modifier.widthIn(min = 43.dp).padding(top = 5.dp))
                                 Text(rendered, color = if (marker || (active && line.words.isEmpty())) SeaGlass else PaleBlue,
                                     fontFamily = if (marker) FontFamily.SansSerif else FontFamily.Serif,
                                     fontSize = if (marker) 14.sp else 19.sp, lineHeight = 27.sp,

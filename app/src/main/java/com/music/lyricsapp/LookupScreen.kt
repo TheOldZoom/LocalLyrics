@@ -4,6 +4,8 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -11,6 +13,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
@@ -48,7 +52,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.UUID
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 internal fun LookupScreen(onDraft: (String) -> Unit, onSettings: () -> Unit) {
     val context = LocalContext.current
@@ -156,7 +160,7 @@ internal fun LookupScreen(onDraft: (String) -> Unit, onSettings: () -> Unit) {
                         LibrarySettings.setOnlineLookup(context, true); consent = true
                     }) { Text(stringResource(R.string.enable_online_lookup)) }
                 }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(onClick = { search(false) }, enabled = !searching && consent && ordered.isNotEmpty()) {
                         Text(stringResource(R.string.search))
                     }
@@ -202,9 +206,9 @@ internal fun LookupScreen(onDraft: (String) -> Unit, onSettings: () -> Unit) {
                 Surface(color = MaterialTheme.colorScheme.surfaceContainer,
                     shape = MaterialTheme.shapes.large) {
                     Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Text(DraftFormat.text(DraftFormat.import(row.plain)),
-                            style = MaterialTheme.typography.bodyLarge,
-                            modifier = Modifier.heightIn(max = 280.dp))
+                        Column(Modifier.heightIn(max = 280.dp).verticalScroll(rememberScrollState())) {
+                            LyricsTextBlock(DraftFormat.text(DraftFormat.import(row.plain)))
+                        }
                         Button(onClick = {
                             scope.launch {
                                 val id = UUID.randomUUID().toString()
