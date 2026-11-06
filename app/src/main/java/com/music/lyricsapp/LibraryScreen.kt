@@ -15,6 +15,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -40,6 +42,9 @@ import androidx.compose.material3.Checkbox
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.CenterAlignedTopAppBar
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
@@ -74,6 +79,7 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.runtime.saveable.rememberSaveable
 import com.music.lyricsapp.core.LrcLib
 import com.music.lyricsapp.core.LyricsSource
@@ -125,6 +131,7 @@ internal fun LocalTrack.inFilter(filter: TrackFilter): Boolean = when (filter) {
     else -> stringResource(R.string.status_searching) to MutedBlue
 }
 
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 internal fun NeedsAttentionScreen(
     artifacts: List<RecoveryManager.Artifact>, backupDays: Int, message: String, busy: Boolean,
@@ -133,16 +140,19 @@ internal fun NeedsAttentionScreen(
     onDelete: (RecoveryManager.Artifact) -> Unit,
     onCleanup: () -> Unit, onClearMessage: () -> Unit,
 ) {
-    LazyColumn(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding(),
+    Scaffold(contentWindowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0),
+        topBar = { CenterAlignedTopAppBar(
+        title = { Text(stringResource(R.string.ui_needs_attention)) },
+        windowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0),
+        navigationIcon = { TextButton(onClick = onBack) { Text(stringResource(R.string.library)) } }) }) { padding ->
+    LazyColumn(Modifier.fillMaxSize().padding(padding),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(20.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                TextButton(onClick = onBack) { Text(stringResource(R.string.library)) }
-                Text(stringResource(R.string.ui_needs_attention), style = MaterialTheme.typography.headlineMedium)
                 Text(stringResource(R.string.ui_these_files_were_kept_for_recovery_after_a_write),
                     color = MutedBlue)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(onClick = onRefresh, enabled = !busy) { Text(stringResource(R.string.refresh)) }
                     if (backupDays > 0) OutlinedButton(onClick = onCleanup, enabled = !busy) {
                         Text(stringResource(R.string.clean_up_after_backupdays_days, backupDays))
@@ -173,8 +183,10 @@ internal fun NeedsAttentionScreen(
             }
         }
     }
+    }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 internal fun LibraryHome(
     tracks: List<LocalTrack>, folder: String, autoAdd: Boolean, mediaAccess: Boolean,
@@ -188,6 +200,7 @@ internal fun LibraryHome(
     var sort by remember { mutableStateOf(TrackSort.TITLE) }
     var sortMenu by remember { mutableStateOf(false) }
     var selectedAlbum by rememberSaveable { mutableStateOf<String?>(null) }
+    var showTools by rememberSaveable { mutableStateOf(folder.isBlank() && !mediaAccess) }
     BackHandler(selectedAlbum != null) { selectedAlbum = null }
     var selecting by remember { mutableStateOf(false) }
     var selectedUris by remember { mutableStateOf<Set<String>>(emptySet()) }
@@ -210,7 +223,8 @@ internal fun LibraryHome(
         }.toList().sortedBy { (_, songs) -> songs.first().album.ifBlank { "\uffff" }.lowercase() }
     }
     val albumTracks = albums.firstOrNull { it.first == selectedAlbum }?.second.orEmpty()
-    LazyColumn(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding(),
+    val settingsLabel = stringResource(R.string.ui_settings)
+    LazyColumn(Modifier.fillMaxSize(),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 20.dp, vertical = 18.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)) {
         item {
@@ -228,34 +242,44 @@ internal fun LibraryHome(
                             else stringResource(R.string.album_track_count, albumTracks.size), color = MutedBlue)
                     }
                     if (selectedAlbum == null) IconButton(onClick = onSettings) {
-                        Text("⚙", modifier = Modifier.semantics { contentDescription = "Settings" })
+                        Text("⚙", modifier = Modifier.semantics { contentDescription = settingsLabel })
                     }
                 }
                 if (selectedAlbum == null && !mediaAccess) Button(onClick = onRequestMedia) {
                     Text(stringResource(R.string.media_library_permission))
                 }
-                if (selectedAlbum == null) Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Button(onClick = onPickFolder) { Text(if (folder.isBlank()) "Choose music folder" else "Change folder") }
+                if (selectedAlbum == null) TextButton(onClick = { showTools = !showTools }) {
+                    Text(if (showTools) stringResource(R.string.hide_library_tools)
+                        else stringResource(R.string.show_library_tools))
+                }
+                if (selectedAlbum == null && showTools) FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Button(onClick = onPickFolder) { Text(stringResource(
+                        if (folder.isBlank()) R.string.choose_music_folder else R.string.change_music_folder)) }
                     OutlinedButton(onClick = onScan, enabled = folder.isNotBlank() || mediaAccess) { Text(stringResource(R.string.scan)) }
                 }
-                if (selectedAlbum == null && !mediaAccess) Text(stringResource(R.string.media_library_permission_explanation),
+                if (selectedAlbum == null && showTools && !mediaAccess) Text(stringResource(R.string.media_library_permission_explanation),
                     style = MaterialTheme.typography.bodySmall, color = MutedBlue)
-                if (selectedAlbum == null) TextButton(onClick = onAttention) { Text(stringResource(R.string.needs_attention_recovery_files)) }
+                if (selectedAlbum == null && showTools) TextButton(onClick = onAttention) { Text(stringResource(R.string.needs_attention_recovery_files)) }
                 if (scanProgress.active || scanProgress.discovered > 0) Text(
                     (if (scanProgress.active) stringResource(R.string.scanning) + " · " else "") +
                         stringResource(R.string.scan_counts, scanProgress.discovered, scanProgress.inspected),
                     color = WarmGold, style = MaterialTheme.typography.bodySmall)
-                if (selectedAlbum == null && (folder.isNotBlank() || mediaAccess)) {
+                if (selectedAlbum == null && showTools && (folder.isNotBlank() || mediaAccess)) {
                     Surface(color = CardBlue, shape = RoundedCornerShape(20.dp)) {
-                        Row(Modifier.fillMaxWidth().padding(18.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-                            SummaryCount(tracks.count { it.inFilter(TrackFilter.REVIEW) }, "To review", WarmGold)
-                            SummaryCount(tracks.count { it.inFilter(TrackFilter.WRONG) }, "Wrong", SoftCoral)
-                            SummaryCount(tracks.count { it.inFilter(TrackFilter.IN_FILE) }, "In files", SeaGlass)
+                        FlowRow(Modifier.fillMaxWidth().padding(18.dp),
+                            horizontalArrangement = Arrangement.spacedBy(24.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                            SummaryCount(tracks.count { it.inFilter(TrackFilter.REVIEW) },
+                                stringResource(R.string.filter_to_review), WarmGold)
+                            SummaryCount(tracks.count { it.inFilter(TrackFilter.WRONG) },
+                                stringResource(R.string.filter_wrong), SoftCoral)
+                            SummaryCount(tracks.count { it.inFilter(TrackFilter.IN_FILE) },
+                                stringResource(R.string.filter_in_file), SeaGlass)
                         }
                     }
-                    if (folder.isNotBlank()) {
-                        Text(if (autoAdd) "Automatic writing is on. Review added lyrics for mistakes."
-                            else "Automatic writing is off. Review a result before adding it.",
+                    if (folder.isNotBlank() && showTools) {
+                        Text(stringResource(if (autoAdd) R.string.auto_writing_on_hint
+                            else R.string.auto_writing_off_hint),
                             color = MutedBlue, style = MaterialTheme.typography.bodySmall)
                         val next = tracks.firstOrNull { it.inFilter(TrackFilter.REVIEW) }
                         if (next != null) OutlinedButton(onClick = { onOpen(next) }) { Text(stringResource(R.string.review_next)) }
@@ -387,7 +411,7 @@ internal fun TrackRow(track: LocalTrack, selecting: Boolean, selected: Boolean, 
     val preview = remember(track.proposed, track.existing, track.error, track.status) {
         val raw = track.proposed.ifBlank { track.existing }
         if (raw.isNotBlank()) lyricsAsText(raw).lineSequence().firstOrNull { it.isNotBlank() }.orEmpty()
-        else track.error.ifBlank { if (track.status == "new") "Waiting for a lyric result" else "Open for details" }
+        else track.error.ifBlank { "" }
     }
     Column(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(top = 2.dp),
         verticalArrangement = Arrangement.spacedBy(4.dp)) {
@@ -403,15 +427,26 @@ internal fun TrackRow(track: LocalTrack, selecting: Boolean, selected: Boolean, 
                         maxLines = 2, overflow = TextOverflow.Ellipsis)
                     Text(track.artist.ifBlank { "Unknown artist" }, color = MutedBlue,
                         style = MaterialTheme.typography.bodyMedium, maxLines = 1)
+                    Spacer(Modifier.height(4.dp))
+                    StatusPill(track)
                 }
-                Spacer(Modifier.width(10.dp))
-                StatusPill(track)
             }
             if (preview.isNotBlank()) Text(preview, color = PaleBlue.copy(alpha = 0.86f),
                 fontFamily = if (track.proposed.isNotBlank() || track.existing.isNotBlank()) FontFamily.Serif else FontFamily.Default,
                 fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         HorizontalDivider(color = MutedBlue.copy(alpha = 0.2f))
+    }
+}
+
+@Preview(name = "Track row · light", showBackground = true, widthDp = 360)
+@Preview(name = "Track row · large text", showBackground = true, widthDp = 360, fontScale = 2f)
+@Composable
+private fun TrackRowPreview() {
+    LyricsAppTheme(LocalContext.current, ThemeChoice.LIGHT) {
+        TrackRow(LocalTrack("", "demo.mp3", "A Quiet Hour", "Northbound", "Night Maps",
+            212000, "", "ready", "", "[Verse 1]\nThe streets are still", "", "", ""),
+            selecting = false, selected = false, onClick = {})
     }
 }
 

@@ -13,6 +13,7 @@ import android.content.Context
 import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -47,6 +48,16 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.Icon
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.LibraryMusic
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.LibraryMusic
+import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.NavigationRail
 import androidx.compose.material3.NavigationRailItem
 import androidx.compose.material3.Scaffold
@@ -101,6 +112,7 @@ import kotlinx.coroutines.withContext
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
         LibrarySettings.schedule(this)
         if (LibrarySettings.folder(this).isNotBlank() || MediaLibrary.permitted(this)) LibrarySettings.scanNow(this)
         setContent {
@@ -505,7 +517,10 @@ private fun LyricsScreen(onThemeChanged: () -> Unit) {
     val currentRoute = currentEntry?.destination?.route.orEmpty()
     val tabs = listOf("library" to R.string.library, "lookup" to R.string.lookup,
         "maker" to R.string.maker, "settings" to R.string.ui_settings)
-    val symbols = listOf("▤", "⌕", "✎", "⚙")
+    val selectedIcons = listOf(Icons.Filled.LibraryMusic, Icons.Filled.Search,
+        Icons.Filled.Edit, Icons.Filled.Settings)
+    val unselectedIcons = listOf(Icons.Outlined.LibraryMusic, Icons.Outlined.Search,
+        Icons.Outlined.Edit, Icons.Outlined.Settings)
     val selectedTab = when (currentRoute) {
         "track", "attention", "metadata" -> "library"
         "maker_edit/{id}" -> "maker"
@@ -524,7 +539,8 @@ private fun LyricsScreen(onThemeChanged: () -> Unit) {
             if (!wide) NavigationBar {
                 tabs.forEachIndexed { index, (route, label) ->
                     NavigationBarItem(selected = selectedTab == route, onClick = { goTab(route) },
-                        icon = { Text(symbols[index]) }, label = { Text(stringResource(label)) })
+                        icon = { Icon(if (selectedTab == route) selectedIcons[index] else unselectedIcons[index],
+                            contentDescription = null) }, label = { Text(stringResource(label)) })
                 }
             }
         }) { innerPadding ->
@@ -532,7 +548,8 @@ private fun LyricsScreen(onThemeChanged: () -> Unit) {
                 if (wide) NavigationRail {
                     tabs.forEachIndexed { index, (route, label) ->
                         NavigationRailItem(selected = selectedTab == route, onClick = { goTab(route) },
-                            icon = { Text(symbols[index]) }, label = { Text(stringResource(label)) })
+                            icon = { Icon(if (selectedTab == route) selectedIcons[index] else unselectedIcons[index],
+                                contentDescription = null) }, label = { Text(stringResource(label)) })
                     }
                 }
                 NavHost(navController = navigation, startDestination = "library",

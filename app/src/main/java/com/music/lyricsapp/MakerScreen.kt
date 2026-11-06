@@ -11,12 +11,16 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.background
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -31,12 +35,21 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material3.Button
+import androidx.compose.material3.CenterAlignedTopAppBar
+import androidx.compose.material3.LargeTopAppBar
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -46,6 +59,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
@@ -59,6 +73,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -112,9 +130,11 @@ private object LocalArtwork {
     }
     private val misses = mutableSetOf<String>()
 
-    @Synchronized fun load(context: Context, uri: String): Bitmap? {
-        cache.get(uri)?.let { return it }
-        if (uri in misses) return null
+    fun load(context: Context, uri: String): Bitmap? {
+        synchronized(this) {
+            cache.get(uri)?.let { return it }
+            if (uri in misses) return null
+        }
         val bitmap = runCatching {
             val retriever = MediaMetadataRetriever()
             try {
@@ -128,23 +148,27 @@ private object LocalArtwork {
                     BitmapFactory.Options().apply { inSampleSize = sample })
             } finally { retriever.release() }
         }.getOrNull()
-        if (bitmap == null) misses += uri else cache.put(uri, bitmap)
+        synchronized(this) {
+            if (bitmap == null) misses += uri else cache.put(uri, bitmap)
+        }
         return bitmap
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun DraftShelf(onOpen: (String) -> Unit) {
     val context = LocalContext.current
     val dao = remember { WorkspaceDatabase.get(context).workspaceDao() }
     val drafts by dao.observeDrafts().collectAsStateWithLifecycle(initialValue = emptyList())
     val scope = rememberCoroutineScope()
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp),
+    Scaffold(contentWindowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0),
+        topBar = { LargeTopAppBar(title = { Text(stringResource(R.string.maker)) },
+        windowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0)) }) { padding ->
+    LazyColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(20.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text(stringResource(R.string.maker), style = MaterialTheme.typography.headlineLarge,
-                    fontWeight = FontWeight.Bold)
                 Text(stringResource(R.string.maker_intro), color = MutedBlue)
                 Button(onClick = {
                     val id = UUID.randomUUID().toString()
@@ -170,10 +194,18 @@ internal fun DraftShelf(onOpen: (String) -> Unit) {
                         Text(draft.artist.ifBlank { stringResource(R.string.add_artist) },
                             color = MutedBlue, maxLines = 1)
                     }
-                    Text("${DraftFormat.decode(draft.linesJson).size}", color = MutedBlue)
+                    Column(horizontalAlignment = Alignment.End) {
+                        Text(stringResource(R.string.draft_line_count,
+                            remember(draft.linesJson) { DraftFormat.decode(draft.linesJson).size }),
+                            style = MaterialTheme.typography.labelMedium, color = MutedBlue)
+                        Text(java.text.DateFormat.getDateInstance(java.text.DateFormat.MEDIUM)
+                            .format(java.util.Date(draft.updatedAt)),
+                            style = MaterialTheme.typography.bodySmall, color = MutedBlue)
+                    }
                 }
             }
         }
+    }
     }
 }
 
@@ -193,10 +225,14 @@ internal fun MakerEditor(draftId: String, onBack: () -> Unit) {
     MakerEditorContent(initial, dao, onBack)
 }
 
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
 private fun MakerEditorContent(initial: DraftEntity, dao: WorkspaceDao, onBack: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val reorderStepPx = with(LocalDensity.current) { 64.dp.toPx() }
+    val swipeThresholdPx = with(LocalDensity.current) { 80.dp.toPx() }
+    val snackbarHostState = remember { SnackbarHostState() }
     var draft by remember(initial.id) { mutableStateOf(initial) }
     var lines by remember(initial.id) { mutableStateOf(DraftFormat.decode(initial.linesJson)) }
     var mode by remember(initial.id) { mutableStateOf(false) }
@@ -329,19 +365,21 @@ private fun MakerEditorContent(initial: DraftEntity, dao: WorkspaceDao, onBack: 
     val readyForLrc = draft.title.isNotBlank() && draft.artist.isNotBlank() &&
         lines.isNotEmpty() && lines.all { it.text.isNotBlank() && it.timeMs != null }
 
+    Box(Modifier.fillMaxSize()) {
     Column(Modifier.fillMaxSize()) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = {
+        CenterAlignedTopAppBar(title = { Text(stringResource(R.string.lyric_draft)) },
+            windowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0),
+            navigationIcon = { TextButton(onClick = {
                 scope.launch { dao.saveDraft(currentDraft); onBack() }
-            }) { Text(stringResource(R.string.maker)) }
-            TextButton(onClick = ::undo, enabled = undoStack.isNotEmpty()) {
+            }) { Text(stringResource(R.string.maker)) } },
+            actions = {
+                TextButton(onClick = ::undo, enabled = undoStack.isNotEmpty()) {
                 Text(stringResource(R.string.undo))
-            }
-            TextButton(onClick = ::redo, enabled = redoStack.isNotEmpty()) {
+                }
+                TextButton(onClick = ::redo, enabled = redoStack.isNotEmpty()) {
                 Text(stringResource(R.string.redo))
-            }
-        }
+                }
+            })
         LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 20.dp, vertical = 12.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)) {
             item {
@@ -369,18 +407,28 @@ private fun MakerEditorContent(initial: DraftEntity, dao: WorkspaceDao, onBack: 
                 }
             }
             item {
-                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    item { FilterChip(!mode, { mode = false }, label = { Text(stringResource(R.string.text_view)) }) }
-                    item { FilterChip(mode, { mode = true }, label = { Text(stringResource(R.string.timing_view)) }) }
-                    item { OutlinedButton(onClick = { importPicker.launch(arrayOf("text/*", "application/octet-stream")) }) {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                SingleChoiceSegmentedButtonRow {
+                    SegmentedButton(selected = !mode, onClick = { mode = false },
+                        shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2)) {
+                        Text(stringResource(R.string.text_view))
+                    }
+                    SegmentedButton(selected = mode, onClick = { mode = true },
+                        shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2)) {
+                        Text(stringResource(R.string.timing_view))
+                    }
+                }
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = { importPicker.launch(arrayOf("text/*", "application/octet-stream")) }) {
                         Text(stringResource(R.string.import_lrc))
-                    } }
-                    item { OutlinedButton(onClick = {
+                    }
+                    OutlinedButton(onClick = {
                         val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                         val pasted = clipboard.primaryClip?.getItemAt(0)?.coerceToText(context)?.toString().orEmpty()
                         if (pasted.isNotBlank()) updateLines(lines + DraftFormat.import(pasted))
                         else message = context.getString(R.string.clipboard_empty)
-                    }) { Text(stringResource(R.string.paste_text)) } }
+                    }) { Text(stringResource(R.string.paste_text)) }
+                }
                 }
             }
             if (!mode) {
@@ -390,7 +438,41 @@ private fun MakerEditorContent(initial: DraftEntity, dao: WorkspaceDao, onBack: 
                     }
                 }
                 itemsIndexed(lines, key = { _, line -> line.id }) { index, line ->
-                    Surface(color = MaterialTheme.colorScheme.surfaceContainer, shape = MaterialTheme.shapes.medium) {
+                    var dragY by remember(line.id) { mutableFloatStateOf(0f) }
+                    var swipeX by remember(line.id) { mutableFloatStateOf(0f) }
+                    val moveUpLabel = stringResource(R.string.move_line_up, index + 1)
+                    val moveDownLabel = stringResource(R.string.move_line_down, index + 1)
+                    val reorderLabel = stringResource(R.string.reorder_line, index + 1)
+                    fun moveLine(offset: Int): Boolean {
+                        val from = lines.indexOfFirst { it.id == line.id }
+                        val to = (from + offset).coerceIn(0, lines.lastIndex)
+                        if (from < 0 || from == to) return false
+                        updateLines(lines.toMutableList().apply { add(to, removeAt(from)) })
+                        return true
+                    }
+                    fun deleteLine() {
+                        updateLines(lines.filterNot { it.id == line.id })
+                        scope.launch {
+                            val result = snackbarHostState.showSnackbar(
+                                context.getString(R.string.line_deleted),
+                                actionLabel = context.getString(R.string.undo))
+                            if (result == SnackbarResult.ActionPerformed) {
+                                updateLines(lines.toMutableList().apply {
+                                    add(index.coerceAtMost(size), line)
+                                })
+                            }
+                        }
+                    }
+                    Surface(modifier = Modifier.pointerInput(line.id, lines) {
+                        detectHorizontalDragGestures(
+                            onDragEnd = {
+                                if (kotlin.math.abs(swipeX) >= swipeThresholdPx) deleteLine()
+                                swipeX = 0f
+                            },
+                            onHorizontalDrag = { change, amount ->
+                                change.consume(); swipeX += amount
+                            })
+                    }, color = MaterialTheme.colorScheme.surfaceContainer, shape = MaterialTheme.shapes.medium) {
                         Column(Modifier.fillMaxWidth().padding(10.dp)) {
                             OutlinedTextField(line.text, { value ->
                                 updateLines(lines.toMutableList().apply {
@@ -399,23 +481,26 @@ private fun MakerEditorContent(initial: DraftEntity, dao: WorkspaceDao, onBack: 
                             }, label = { Text(stringResource(R.string.line_number, index + 1)) },
                                 modifier = Modifier.fillMaxWidth())
                             Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                                TextButton(onClick = {
-                                    if (index > 0) updateLines(lines.toMutableList().apply {
-                                        val item = removeAt(index); add(index - 1, item)
+                                Text("⠿", modifier = Modifier.padding(12.dp)
+                                    .pointerInput(line.id, lines) {
+                                        detectDragGesturesAfterLongPress(
+                                            onDragEnd = {
+                                                val steps = (dragY / reorderStepPx).toInt().let {
+                                                    if (it == 0 && kotlin.math.abs(dragY) > reorderStepPx / 3)
+                                                        if (dragY > 0) 1 else -1 else it
+                                                }
+                                                moveLine(steps)
+                                                dragY = 0f
+                                            },
+                                            onDragCancel = { dragY = 0f },
+                                            onDrag = { change, amount -> change.consume(); dragY += amount.y })
+                                    }.semantics {
+                                        contentDescription = reorderLabel
+                                        customActions = listOf(
+                                            CustomAccessibilityAction(moveUpLabel) { moveLine(-1) },
+                                            CustomAccessibilityAction(moveDownLabel) { moveLine(1) })
                                     })
-                                }, enabled = index > 0,
-                                    modifier = Modifier.semantics {
-                                        contentDescription = context.getString(R.string.move_line_up, index + 1)
-                                    }) { Text("↑") }
-                                TextButton(onClick = {
-                                    if (index < lines.lastIndex) updateLines(lines.toMutableList().apply {
-                                        val item = removeAt(index); add(index + 1, item)
-                                    })
-                                }, enabled = index < lines.lastIndex,
-                                    modifier = Modifier.semantics {
-                                        contentDescription = context.getString(R.string.move_line_down, index + 1)
-                                    }) { Text("↓") }
-                                TextButton(onClick = { updateLines(lines.filterIndexed { i, _ -> i != index }) }) {
+                                TextButton(onClick = ::deleteLine) {
                                     Text(stringResource(R.string.delete))
                                 }
                             }
@@ -454,37 +539,29 @@ private fun MakerEditorContent(initial: DraftEntity, dao: WorkspaceDao, onBack: 
                                             })
                                     }
                                 }
-                                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    item {
+                                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                     TextButton(onClick = {
                                         player?.seekTo((line.timeMs ?: 0L).coerceAtLeast(0))
                                     }, enabled = player?.ready == true && line.timeMs != null) {
                                         Text(stringResource(R.string.seek_line))
                                     }
-                                    }
-                                    item {
                                     TextButton(onClick = {
                                         updateLines(lines.toMutableList().apply {
                                             this[index] = line.copy(timeMs = line.timeMs?.minus(100)?.coerceAtLeast(0),
                                                 wordTimes = line.wordTimes.map { it?.minus(100)?.coerceAtLeast(0) })
                                         })
                                     }, enabled = line.timeMs != null) { Text(stringResource(R.string.timing_minus_100)) }
-                                    }
-                                    item {
                                     TextButton(onClick = {
                                         updateLines(lines.toMutableList().apply {
                                             this[index] = line.copy(timeMs = line.timeMs?.plus(100),
                                                 wordTimes = line.wordTimes.map { it?.plus(100) })
                                         })
                                     }, enabled = line.timeMs != null) { Text(stringResource(R.string.timing_plus_100)) }
-                                    }
-                                    item {
                                     TextButton(onClick = {
                                         updateLines(lines.toMutableList().apply {
                                             this[index] = line.copy(timeMs = player?.positionMs)
                                         })
                                     }, enabled = player?.ready == true) { Text(stringResource(R.string.correct_stamp)) }
-                                    }
                                 }
                             }
                         }
@@ -496,29 +573,29 @@ private fun MakerEditorContent(initial: DraftEntity, dao: WorkspaceDao, onBack: 
                     if (!readyForLrc) Text(stringResource(R.string.complete_lrc_hint),
                         color = MutedBlue, style = MaterialTheme.typography.bodySmall)
                     if (message.isNotBlank()) MessageBanner(message) { message = "" }
-                    LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        item { OutlinedButton(onClick = { audioPicker.launch(arrayOf("audio/*")) }) {
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = { audioPicker.launch(arrayOf("audio/*")) }) {
                             Text(stringResource(R.string.attach_audio))
-                        } }
-                        item { OutlinedButton(onClick = {
+                        }
+                        OutlinedButton(onClick = {
                             exportBody = DraftFormat.portable(draft.title, draft.artist, lines)
                             exportName = "${draft.title.ifBlank { "lyrics" }}.lrc"
                             exportPicker.launch(exportName)
-                        }, enabled = readyForLrc) { Text(stringResource(R.string.export_lrc)) } }
-                        item { OutlinedButton(onClick = {
+                        }, enabled = readyForLrc) { Text(stringResource(R.string.export_lrc)) }
+                        OutlinedButton(onClick = {
                             exportBody = DraftFormat.text(lines)
                             exportPicker.launch("${draft.title.ifBlank { "lyrics" }}.txt")
-                        }, enabled = lines.isNotEmpty()) { Text(stringResource(R.string.export_txt)) } }
-                        item { OutlinedButton(onClick = {
+                        }, enabled = lines.isNotEmpty()) { Text(stringResource(R.string.export_txt)) }
+                        OutlinedButton(onClick = {
                             exportBody = DraftFormat.enhanced(draft.title, draft.artist, lines)
                             exportPicker.launch("${draft.title.ifBlank { "lyrics" }}-enhanced.lrc")
                         }, enabled = readyForLrc && lines.any { it.wordTimes.any { time -> time != null } }) {
                             Text(stringResource(R.string.export_enhanced))
-                        } }
-                        item { Button(onClick = { parentPicker.launch(null) },
+                        }
+                        Button(onClick = { parentPicker.launch(null) },
                             enabled = draft.audioUri.isNotBlank() && readyForLrc) {
                             Text(stringResource(R.string.embed_audio))
-                        } }
+                        }
                     }
                 }
             }
@@ -532,8 +609,7 @@ private fun MakerEditorContent(initial: DraftEntity, dao: WorkspaceDao, onBack: 
                     style = MaterialTheme.typography.titleMedium, maxLines = 2,
                     fontWeight = FontWeight.Bold)
                 if (player != null) {
-                    Row(verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         OutlinedButton(onClick = player::toggle, enabled = player.ready) {
                             Text(if (player.playing) stringResource(R.string.pause) else stringResource(R.string.play))
                         }
@@ -557,7 +633,7 @@ private fun MakerEditorContent(initial: DraftEntity, dao: WorkspaceDao, onBack: 
                     if (player.error.isNotBlank()) Text(player.error, color = SoftCoral,
                         style = MaterialTheme.typography.bodySmall)
                 } else Text(stringResource(R.string.attach_audio_timing), color = MutedBlue)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     TextButton(onClick = { updateLines(lines.map { line ->
                         line.copy(timeMs = line.timeMs?.let { (it - 100).coerceAtLeast(0) },
                             wordTimes = line.wordTimes.map { it?.minus(100)?.coerceAtLeast(0) })
@@ -569,5 +645,7 @@ private fun MakerEditorContent(initial: DraftEntity, dao: WorkspaceDao, onBack: 
                 }
             }
         }
+    }
+    SnackbarHost(snackbarHostState, modifier = Modifier.align(Alignment.BottomCenter))
     }
 }
