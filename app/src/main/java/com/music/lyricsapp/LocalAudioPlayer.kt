@@ -46,6 +46,8 @@ class LocalAudioPlayer(context: Context, uri: Uri) {
         private set
     var error by mutableStateOf("")
         private set
+    var speed by mutableStateOf(1f)
+        private set
 
     private val noisyReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -127,6 +129,17 @@ class LocalAudioPlayer(context: Context, uri: Uri) {
         runCatching { player?.seekTo(target, MediaPlayer.SEEK_CLOSEST) }
             .onSuccess { positionMs = target }
             .onFailure { error = it.message ?: "Could not seek in this file." }
+    }
+
+    fun changeSpeed(value: Float) {
+        if (!ready || released) return
+        val target = value.coerceIn(0.5f, 1f)
+        runCatching {
+            val wasPlaying = playing
+            player?.playbackParams = player!!.playbackParams.setSpeed(target)
+            if (!wasPlaying) player?.pause()
+            speed = target
+        }.onFailure { error = it.message ?: "Could not change playback speed." }
     }
 
     fun tick() {

@@ -2,6 +2,7 @@ package com.music.lyricsapp
 
 import android.content.Context
 import android.net.Uri
+import android.provider.DocumentsContract
 import androidx.documentfile.provider.DocumentFile
 import com.music.lyricsapp.tags.Mp4Tagger
 import com.music.lyricsapp.tags.WebmTagger
@@ -15,10 +16,10 @@ object ApprovedWriter {
     data class Outcome(val message: String, val uri: String, val name: String,
         val signature: String, val replaced: Boolean, val backupUri: String = "")
     /** Returns the actual outcome; a provider that cannot rename leaves a clearly named copy. */
-    suspend fun apply(context: Context, track: LocalTrack): Outcome = withContext(Dispatchers.IO) {
+    suspend fun apply(context: Context, track: LocalTrack, folderUri: String = LibrarySettings.folder(context)): Outcome = withContext(Dispatchers.IO) {
         require(track.status == "ready" && track.proposed.isNotBlank()) { "No reviewed lyrics to write" }
         StandardLyricsField.requireLyrics(track.proposed)
-        val root = DocumentFile.fromTreeUri(context, Uri.parse(LibrarySettings.folder(context)))
+        val root = DocumentFile.fromTreeUri(context, Uri.parse(folderUri))
             ?: error("Choose the music folder again")
         val (parent, original) = locate(root, track.uri) ?: error("File is no longer in the chosen folder")
         require("${original.length()}:${original.lastModified()}:${original.name}" == track.signature) {
@@ -108,7 +109,10 @@ object ApprovedWriter {
 
     private fun locate(folder: DocumentFile, uri: String): Pair<DocumentFile, DocumentFile>? {
         for (child in folder.listFiles()) {
-            if (child.uri.toString() == uri) return folder to child
+            if (child.uri.toString() == uri || runCatching {
+                    child.uri.authority == Uri.parse(uri).authority &&
+                        DocumentsContract.getDocumentId(child.uri) == DocumentsContract.getDocumentId(Uri.parse(uri))
+                }.getOrDefault(false)) return folder to child
             if (child.isDirectory) locate(child, uri)?.let { return it }
         }
         return null

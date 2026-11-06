@@ -89,7 +89,7 @@ class LyricStore(context: Context) : SQLiteOpenHelper(context, "lyrics.db", null
     @Synchronized fun scanned(track: LocalTrack): Boolean {
         val old = get(track.uri)
         if (old != null && old.signature == track.signature && old.name == track.name &&
-            old.existing == track.existing) return false
+            old.existing == track.existing && old.status !in setOf("discovered", "inspecting")) return false
         writableDatabase.delete("provider_results", "track_uri=?", arrayOf(track.uri))
         val row = ContentValues().apply {
             put("uri", track.uri); put("name", track.name); put("title", track.title)
@@ -103,6 +103,22 @@ class LyricStore(context: Context) : SQLiteOpenHelper(context, "lyrics.db", null
         writableDatabase.insertWithOnConflict("tracks", null, row, SQLiteDatabase.CONFLICT_REPLACE)
         changed()
         return true
+    }
+
+    @Synchronized fun discovered(uri: String, name: String, signature: String) {
+        val old = get(uri)
+        if (old == null) {
+            writableDatabase.insertWithOnConflict("tracks", null, ContentValues().apply {
+                put("uri", uri); put("name", name); put("title", name.substringBeforeLast('.'))
+                put("artist", ""); put("album", ""); put("duration_ms", 0)
+                put("signature", signature); put("status", "discovered")
+            }, SQLiteDatabase.CONFLICT_IGNORE)
+            changed()
+        } else if (old.signature != signature || old.status == "metadata_error") {
+            writableDatabase.update("tracks", ContentValues().apply { put("status", "inspecting") },
+                "uri=?", arrayOf(uri))
+            changed()
+        }
     }
 
     @Synchronized fun update(uri: String, status: String, source: String = "", proposed: String = "", enhanced: String = "", error: String = "") {
@@ -212,6 +228,16 @@ class LyricStore(context: Context) : SQLiteOpenHelper(context, "lyrics.db", null
         changed()
     }
 
+    @Synchronized internal fun recordMetadata(uri: String, values: MetadataValues) {
+        val displayTitle = values.title.ifBlank { get(uri)?.name?.substringBeforeLast('.').orEmpty() }
+        writableDatabase.update("tracks", ContentValues().apply {
+            put("title", displayTitle); put("artist", values.artist); put("album", values.album)
+            put("existing", values.lyrics)
+            if (MediaLibrary.isIndexed(uri)) put("status", "indexed")
+        }, "uri=?", arrayOf(uri))
+        changed()
+    }
+
     @Synchronized fun editProposed(uri: String, plain: String, enhanced: String) {
         StandardLyricsField.requireLyrics(plain)
         writableDatabase.update("tracks", ContentValues().apply {
@@ -242,7 +268,11 @@ class LyricStore(context: Context) : SQLiteOpenHelper(context, "lyrics.db", null
     }
 
     @Synchronized fun removeMissing(seen: Set<String>) {
-        all().filter { it.uri !in seen }.forEach { delete(it.uri) }
+        all().filter { !MediaLibrary.isIndexed(it.uri) && it.uri !in seen }.forEach { delete(it.uri) }
+    }
+
+    @Synchronized fun removeMissingIndexed(seen: Set<String>) {
+        all().filter { MediaLibrary.isIndexed(it.uri) && it.uri !in seen }.forEach { delete(it.uri) }
     }
 
     @Synchronized fun all(): List<LocalTrack> = readableDatabase.query(

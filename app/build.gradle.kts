@@ -77,6 +77,8 @@ dependencies {
     implementation("androidx.room:room-runtime:2.8.5")
     implementation("androidx.room:room-ktx:2.8.5")
     implementation("androidx.navigation:navigation-compose:2.9.8")
+    // LGPL library used only for editable, app-private metadata candidates.
+    implementation("net.jthink:jaudiotagger:3.0.1")
     ksp("androidx.room:room-compiler:2.8.5")
     testImplementation("junit:junit:4.13.2")
 }

@@ -1,6 +1,12 @@
 package com.music.lyricsapp
 
 import android.content.Intent
+import android.Manifest
+import android.app.Activity
+import android.app.RecoverableSecurityException
+import android.content.pm.PackageManager
+import android.os.Build
+import android.provider.MediaStore
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -11,8 +17,10 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.result.IntentSenderRequest
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -37,6 +45,11 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationRail
+import androidx.compose.material3.NavigationRailItem
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
@@ -76,7 +89,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import java.util.UUID
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
@@ -87,7 +102,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         LibrarySettings.schedule(this)
-        if (LibrarySettings.folder(this).isNotBlank()) LibrarySettings.scanNow(this)
+        if (LibrarySettings.folder(this).isNotBlank() || MediaLibrary.permitted(this)) LibrarySettings.scanNow(this)
         setContent {
             var theme by remember { mutableStateOf(ThemePreference.get(this)) }
             LyricsAppTheme(this, theme) {
@@ -106,9 +121,19 @@ private fun LyricsScreen(onThemeChanged: () -> Unit) {
     val libraryModel: LyricsViewModel = viewModel()
     val tracks by libraryModel.tracks.collectAsStateWithLifecycle()
     val candidates by libraryModel.candidates.collectAsStateWithLifecycle()
+    val pathsRevision by MediaLibrary.pathsRevision.collectAsStateWithLifecycle()
+    var mediaAccess by remember { mutableStateOf(MediaLibrary.permitted(context)) }
     var pendingReviews by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
-    val visibleTracks = remember(tracks, pendingReviews) {
-        tracks.map { track -> pendingReviews[track.uri]?.let { track.copy(review = it) } ?: track }
+    val visibleTracks = remember(tracks, pendingReviews, pathsRevision, mediaAccess) {
+        val preferredFolder = tracks.filter { !MediaLibrary.isIndexed(it.uri) &&
+            (it.proposed.isNotBlank() || it.existing.isNotBlank() || it.review.isNotBlank()) }
+            .mapNotNull { MediaLibrary.indexedUriForDocument(it.uri) }.toSet()
+        tracks.filterNot { track ->
+            if (MediaLibrary.isIndexed(track.uri)) !mediaAccess || track.uri in preferredFolder
+            else MediaLibrary.indexedCopyOf(track.uri) &&
+                track.proposed.isBlank() && track.existing.isBlank() && track.review.isBlank()
+        }
+            .map { track -> pendingReviews[track.uri]?.let { track.copy(review = it) } ?: track }
     }
     LaunchedEffect(tracks) {
         pendingReviews = pendingReviews.filter { (uri, review) ->
@@ -118,6 +143,20 @@ private fun LyricsScreen(onThemeChanged: () -> Unit) {
     val scanProgress by LibrarySettings.scanProgress.collectAsStateWithLifecycle()
     var selectedUri by remember { mutableStateOf<String?>(null) }
     var folder by remember { mutableStateOf(LibrarySettings.folder(context)) }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                val granted = MediaLibrary.permitted(context)
+                if (granted != mediaAccess) {
+                    mediaAccess = granted
+                    LibrarySettings.scanNow(context, lookup = false)
+                }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
     var autoAdd by remember { mutableStateOf(LibrarySettings.autoAdd(context)) }
     var enabledSources by remember { mutableStateOf(LibrarySettings.sources(context)) }
     var message by remember { mutableStateOf("") }
@@ -130,6 +169,63 @@ private fun LyricsScreen(onThemeChanged: () -> Unit) {
     var exportPayload by remember { mutableStateOf("") }
     var showAutoIntro by remember { mutableStateOf(!LibrarySettings.autoIntroSeen(context)) }
     var showPrivacyIntro by remember { mutableStateOf(!LibrarySettings.privacyIntroSeen(context)) }
+    LaunchedEffect(Unit) {
+        val interrupted = withContext(Dispatchers.IO) {
+            MediaRecovery.cleanupAbandonedPreparations(context)
+            MediaRecovery.list(context).any { it.state == "writing" || it.state == "restore_needed" }
+        }
+        if (interrupted) message = context.getString(R.string.metadata_recovery_needed)
+    }
+
+    var approvedAction by remember { mutableStateOf<(() -> Unit)?>(null) }
+    var deniedAction by remember { mutableStateOf<(() -> Unit)?>(null) }
+    val mediaReadLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        mediaAccess = granted
+        if (granted) LibrarySettings.scanNow(context, lookup = false)
+        else message = context.getString(R.string.media_permission_denied)
+    }
+    val writePermissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        val action = if (granted) approvedAction else deniedAction
+        approvedAction = null; deniedAction = null
+        action?.invoke()
+    }
+    val writeRequestLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
+        val action = if (result.resultCode == Activity.RESULT_OK) approvedAction else deniedAction
+        approvedAction = null; deniedAction = null
+        action?.invoke()
+    }
+    val requestWrite: (Uri, () -> Unit, () -> Unit) -> Unit = { uri, approved, denied ->
+        try {
+            when {
+                Build.VERSION.SDK_INT >= 30 -> {
+                    approvedAction = approved; deniedAction = denied
+                    val request = MediaStore.createWriteRequest(context.contentResolver, listOf(uri))
+                    writeRequestLauncher.launch(IntentSenderRequest.Builder(request.intentSender).build())
+                }
+                Build.VERSION.SDK_INT == 29 -> {
+                    try {
+                        context.contentResolver.openFileDescriptor(uri, "rw")?.use { }
+                            ?: error("Could not request write access")
+                        approved()
+                    } catch (recoverable: RecoverableSecurityException) {
+                        approvedAction = approved; deniedAction = denied
+                        writeRequestLauncher.launch(IntentSenderRequest.Builder(
+                            recoverable.userAction.actionIntent.intentSender).build())
+                    }
+                }
+                context.checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) ==
+                    PackageManager.PERMISSION_GRANTED -> approved()
+                else -> {
+                    approvedAction = approved; deniedAction = denied
+                    writePermissionLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                }
+            }
+        } catch (e: Exception) {
+            approvedAction = null; deniedAction = null
+            message = e.message ?: context.getString(R.string.metadata_save_failed)
+            denied()
+        }
+    }
 
     val exportPicker = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri: Uri? ->
         if (uri != null) {
@@ -148,7 +244,6 @@ private fun LyricsScreen(onThemeChanged: () -> Unit) {
             try {
                 context.contentResolver.takePersistableUriPermission(uri,
                     Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
-                if (folder != uri.toString()) LyricStore(context).use { it.clear() }
                 LibrarySettings.setFolder(context, uri.toString())
                 folder = uri.toString()
                 selectedUri = null
@@ -302,7 +397,7 @@ private fun LyricsScreen(onThemeChanged: () -> Unit) {
     }
 
     val refreshArtifacts: () -> Unit = {
-        if (folder.isNotBlank()) scope.launch {
+        scope.launch {
             try { artifacts = RecoveryManager.list(context) }
             catch (e: Exception) { message = e.message ?: "Could not inspect recovery files" }
         }
@@ -311,12 +406,25 @@ private fun LyricsScreen(onThemeChanged: () -> Unit) {
         if (!artifactBusy && artifact.kind == RecoveryManager.Kind.BACKUP) scope.launch {
             artifactBusy = true
             try {
-                message = RecoveryManager.restore(context, artifact.uri)
-                artifacts = RecoveryManager.list(context)
-                LibrarySettings.scanNow(context)
+                val perform: () -> Unit = {
+                    scope.launch {
+                        try {
+                            message = RecoveryManager.restore(context, artifact.uri)
+                            artifacts = RecoveryManager.list(context)
+                            LibrarySettings.scanNow(context, lookup = false)
+                        } catch (e: Exception) {
+                            message = e.message ?: "Could not restore backup"
+                        } finally { artifactBusy = false }
+                    }
+                }
+                if (artifact.mediaId.isNotBlank()) requestWrite(Uri.parse(artifact.targetUri), perform) {
+                    artifactBusy = false
+                    message = context.getString(R.string.media_permission_denied)
+                } else perform()
             } catch (e: Exception) {
                 message = e.message ?: "Could not restore backup"
-            } finally { artifactBusy = false }
+                artifactBusy = false
+            }
         }
     }
     val deleteArtifact: (RecoveryManager.Artifact) -> Unit = { artifact ->
@@ -360,7 +468,8 @@ private fun LyricsScreen(onThemeChanged: () -> Unit) {
                 val eligible = withContext(Dispatchers.IO) {
                     LyricStore(context).use { store ->
                         store.all().filter { track ->
-                            if (track.status != "ready" || track.existing.isNotBlank() || track.review == "wrong") false
+                            if (MediaLibrary.isIndexed(track.uri) || MediaLibrary.indexedCopyOf(track.uri) ||
+                                track.status != "ready" || track.existing.isNotBlank() || track.review == "wrong") false
                             else {
                                 val candidates = store.candidates(track.uri)
                                 val selected = candidates.firstOrNull { it.source.name == track.selectedProvider }
@@ -388,12 +497,51 @@ private fun LyricsScreen(onThemeChanged: () -> Unit) {
         }
     }
 
-    NavHost(navController = navigation, startDestination = "library") {
+    val openDraft: (String) -> Unit = { id ->
+        navigation.navigate("maker_edit/$id")
+    }
+    val currentEntry by navigation.currentBackStackEntryAsState()
+    val currentRoute = currentEntry?.destination?.route.orEmpty()
+    val tabs = listOf("library" to R.string.library, "lookup" to R.string.lookup,
+        "maker" to R.string.maker, "settings" to R.string.ui_settings)
+    val symbols = listOf("▤", "⌕", "✎", "⚙")
+    val selectedTab = when (currentRoute) {
+        "track", "attention", "metadata" -> "library"
+        "maker_edit/{id}" -> "maker"
+        else -> currentRoute
+    }
+    val goTab: (String) -> Unit = { route ->
+        navigation.navigate(route) {
+            launchSingleTop = true
+            restoreState = true
+            popUpTo("library") { saveState = true }
+        }
+    }
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val wide = maxWidth >= 600.dp
+        Scaffold(bottomBar = {
+            if (!wide) NavigationBar {
+                tabs.forEachIndexed { index, (route, label) ->
+                    NavigationBarItem(selected = selectedTab == route, onClick = { goTab(route) },
+                        icon = { Text(symbols[index]) }, label = { Text(stringResource(label)) })
+                }
+            }
+        }) { innerPadding ->
+            Row(Modifier.fillMaxSize().padding(innerPadding)) {
+                if (wide) NavigationRail {
+                    tabs.forEachIndexed { index, (route, label) ->
+                        NavigationRailItem(selected = selectedTab == route, onClick = { goTab(route) },
+                            icon = { Text(symbols[index]) }, label = { Text(stringResource(label)) })
+                    }
+                }
+                NavHost(navController = navigation, startDestination = "library",
+                    modifier = Modifier.weight(1f)) {
         composable("library") {
-            LibraryHome(visibleTracks, folder, autoAdd, scanProgress, filter, message, applying || reviewing,
+            LibraryHome(visibleTracks, folder, autoAdd, mediaAccess, scanProgress, filter, message, applying || reviewing,
                 onFilter = { filter = it },
                 onPickFolder = { folderPicker.launch(null) },
-                onScan = { LibrarySettings.scanNow(context); message = "Scanning folder" },
+                onRequestMedia = { mediaReadLauncher.launch(MediaLibrary.permission()) },
+                onScan = { LibrarySettings.scanNow(context); message = "Scanning music" },
                 onSettings = { navigation.navigate("settings") },
                 onAttention = { refreshArtifacts(); navigation.navigate("attention") },
                 onOpen = { selectedUri = it.uri; navigation.navigate("track") },
@@ -427,6 +575,19 @@ private fun LyricsScreen(onThemeChanged: () -> Unit) {
                             } finally { reviewing = false }
                         }
                     },
+                    onOpenMaker = {
+                        scope.launch {
+                            val id = UUID.randomUUID().toString()
+                            val body = selectedTrack.proposed.ifBlank { selectedTrack.existing }
+                            val source = selectedTrack.enhanced.ifBlank { body }
+                            WorkspaceDatabase.get(context).workspaceDao().saveDraft(
+                                DraftEntity(id, selectedTrack.title, selectedTrack.artist,
+                                    selectedTrack.album, DraftFormat.encode(DraftFormat.import(source)),
+                                    selectedTrack.uri, origin = "Library"))
+                            openDraft(id)
+                        }
+                    },
+                    onOpenMetadata = { navigation.navigate("metadata") },
                     onRestore = { restoreOriginal(selectedTrack) },
                     onNextReview = {
                         val next = tracks.firstOrNull { it.uri != selectedTrack.uri &&
@@ -438,6 +599,19 @@ private fun LyricsScreen(onThemeChanged: () -> Unit) {
                     onDismiss = { dismiss(selectedTrack) },
                     onClearMessage = { message = "" })
             }
+        }
+        composable("metadata") {
+            if (selectedTrack == null) {
+                TextButton(onClick = { navigation.popBackStack() }) { Text(stringResource(R.string.return_to_library)) }
+            } else MetadataEditorScreen(selectedTrack,
+                onBack = { navigation.popBackStack() },
+                onSaved = { savedMessage ->
+                    message = savedMessage
+                    if (!MediaLibrary.isIndexed(selectedTrack.uri)) LibrarySettings.scanNow(context, lookup = false)
+                    selectedUri = null
+                    navigation.popBackStack("library", false)
+                },
+                requestWrite = { uri, approved, denied -> requestWrite(uri, approved, denied) })
         }
         composable("attention") {
             NeedsAttentionScreen(artifacts, LibrarySettings.backupDays(context), message, artifactBusy,
@@ -452,6 +626,18 @@ private fun LyricsScreen(onThemeChanged: () -> Unit) {
                 onThemeChanged()
                 if (providersChanged) LibrarySettings.scanNow(context)
             })
+        }
+        composable("lookup") {
+            LookupScreen(onDraft = openDraft, onSettings = { goTab("settings") })
+        }
+        composable("maker") { DraftShelf(onOpen = openDraft) }
+        composable("maker_edit/{id}") { entry ->
+            entry.arguments?.getString("id")?.let { id ->
+                MakerEditor(id, onBack = { navigation.popBackStack() })
+            }
+        }
+                }
+            }
         }
     }
     if (showPrivacyIntro) AlertDialog(
