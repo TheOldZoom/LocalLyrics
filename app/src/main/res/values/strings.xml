@@ -1,5 +1,24 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="choose_music_folder">Choose music folder</string>
+    <string name="change_music_folder">Change folder</string>
+    <string name="auto_writing_on_hint">Automatic writing is on. Review added lyrics for mistakes.</string>
+    <string name="auto_writing_off_hint">Automatic writing is off. Review a result before adding it.</string>
+    <string name="show_library_tools">Library tools</string>
+    <string name="hide_library_tools">Hide tools</string>
+    <string name="line_deleted">Line deleted</string>
+    <string name="backup_forever">Forever</string>
+    <string name="backup_7_days">7 days</string>
+    <string name="backup_30_days">30 days</string>
+    <string name="backup_90_days">90 days</string>
+    <string name="theme_system">System</string>
+    <string name="theme_dynamic">Dynamic</string>
+    <string name="theme_dark">Dark</string>
+    <string name="theme_light">Light</string>
+    <string name="reorder_line">Reorder line %1$d</string>
+    <string name="reorder_provider">Reorder %1$s</string>
+    <string name="move_up">Move up</string>
+    <string name="move_down">Move down</string>
     <string name="section_lookup">Lookup</string>
     <string name="section_writing">Writing</string>
     <string name="section_backups">Backups</string>

@@ -14,6 +14,10 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -35,6 +39,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.CenterAlignedTopAppBar
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -50,6 +58,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -58,6 +67,10 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
@@ -81,6 +94,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 internal fun SourceSettings(onClose: () -> Unit, onSaved: (Boolean) -> Unit) {
     val context = LocalContext.current
@@ -95,15 +109,25 @@ internal fun SourceSettings(onClose: () -> Unit, onSaved: (Boolean) -> Unit) {
     var backupDays by remember { mutableStateOf(LibrarySettings.backupDays(context)) }
     var wifiOnly by remember { mutableStateOf(LibrarySettings.wifiOnly(context)) }
     var themeChoice by remember { mutableStateOf(ThemePreference.get(context)) }
+    var backupMenu by remember { mutableStateOf(false) }
+    var themeMenu by remember { mutableStateOf(false) }
     var saveError by remember { mutableStateOf("") }
-    Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()
+    val rowHeightPx = with(LocalDensity.current) { 56.dp.toPx() }
+    fun moveProvider(source: com.music.lyricsapp.core.LyricsSource, offset: Int): Boolean {
+        val from = order.indexOf(source)
+        val to = (from + offset).coerceIn(0, order.lastIndex)
+        if (from < 0 || from == to) return false
+        order = order.toMutableList().apply { add(to, removeAt(from)) }
+        return true
+    }
+    Column(Modifier.fillMaxSize()
         .padding(horizontal = 20.dp, vertical = 12.dp)) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = onClose) { Text(stringResource(R.string.library)) }
-            Text(stringResource(R.string.ui_settings), style = MaterialTheme.typography.headlineMedium)
-        }
+        CenterAlignedTopAppBar(title = { Text(stringResource(R.string.ui_settings)) },
+            windowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0),
+            navigationIcon = { TextButton(onClick = onClose) { Text(stringResource(R.string.library)) } })
             Column(Modifier.weight(1f).verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(stringResource(R.string.section_lookup), style = MaterialTheme.typography.titleLarge)
                 Row(Modifier.fillMaxWidth().clickable { onlineLookup = !onlineLookup },
                     verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
@@ -113,6 +137,7 @@ internal fun SourceSettings(onClose: () -> Unit, onSaved: (Boolean) -> Unit) {
                     }
                     Switch(checked = onlineLookup, onCheckedChange = { onlineLookup = it })
                 }
+                Text(stringResource(R.string.section_writing), style = MaterialTheme.typography.titleLarge)
                 Row(Modifier.fillMaxWidth().clickable { autoAdd = !autoAdd },
                     verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
@@ -124,11 +149,23 @@ internal fun SourceSettings(onClose: () -> Unit, onSaved: (Boolean) -> Unit) {
                 }
                 OutlinedTextField(value = key, onValueChange = { key = it },
                     label = { Text(stringResource(R.string.paxsenix_api_key_optional)) }, modifier = Modifier.fillMaxWidth())
+                Text(stringResource(R.string.section_backups), style = MaterialTheme.typography.titleLarge)
                 Text(stringResource(R.string.ui_keep_original_backups_for), style = MaterialTheme.typography.titleSmall)
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    listOf(0 to "Forever", 7 to "7 days", 30 to "30 days", 90 to "90 days").forEach { (days, label) ->
-                        FilterChip(selected = backupDays == days, onClick = { backupDays = days },
-                            label = { Text(label) })
+                androidx.compose.foundation.layout.Box {
+                    OutlinedButton(onClick = { backupMenu = true }) {
+                        Text(when (backupDays) {
+                            7 -> stringResource(R.string.backup_7_days)
+                            30 -> stringResource(R.string.backup_30_days)
+                            90 -> stringResource(R.string.backup_90_days)
+                            else -> stringResource(R.string.backup_forever)
+                        })
+                    }
+                    DropdownMenu(expanded = backupMenu, onDismissRequest = { backupMenu = false }) {
+                        listOf(0 to R.string.backup_forever, 7 to R.string.backup_7_days,
+                            30 to R.string.backup_30_days, 90 to R.string.backup_90_days).forEach { (days, label) ->
+                            DropdownMenuItem(text = { Text(stringResource(label)) },
+                                onClick = { backupDays = days; backupMenu = false })
+                        }
                     }
                 }
                 Text(stringResource(R.string.ui_expired_backups_are_removed_only_when_you_choose),
@@ -139,11 +176,26 @@ internal fun SourceSettings(onClose: () -> Unit, onSaved: (Boolean) -> Unit) {
                     Switch(checked = wifiOnly, onCheckedChange = { wifiOnly = it })
                 }
                 Text(stringResource(R.string.ui_appearance), style = MaterialTheme.typography.titleSmall)
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    ThemeChoice.entries.forEach { choice ->
-                        FilterChip(selected = themeChoice == choice,
-                            onClick = { themeChoice = choice },
-                            label = { Text(choice.name.lowercase().replaceFirstChar { it.uppercase() }) })
+                androidx.compose.foundation.layout.Box {
+                    OutlinedButton(onClick = { themeMenu = true }) {
+                        Text(stringResource(when (themeChoice) {
+                            ThemeChoice.SYSTEM -> R.string.theme_system
+                            ThemeChoice.DYNAMIC -> R.string.theme_dynamic
+                            ThemeChoice.DARK -> R.string.theme_dark
+                            ThemeChoice.LIGHT -> R.string.theme_light
+                        }))
+                    }
+                    DropdownMenu(expanded = themeMenu, onDismissRequest = { themeMenu = false }) {
+                        ThemeChoice.entries.forEach { choice ->
+                            val label = when (choice) {
+                                ThemeChoice.SYSTEM -> R.string.theme_system
+                                ThemeChoice.DYNAMIC -> R.string.theme_dynamic
+                                ThemeChoice.DARK -> R.string.theme_dark
+                                ThemeChoice.LIGHT -> R.string.theme_light
+                            }
+                            DropdownMenuItem(text = { Text(stringResource(label)) },
+                                onClick = { themeChoice = choice; themeMenu = false })
+                        }
                     }
                 }
                 if (saveError.isNotBlank()) Text(saveError, color = SoftCoral)
@@ -151,31 +203,45 @@ internal fun SourceSettings(onClose: () -> Unit, onSaved: (Boolean) -> Unit) {
                 Text(stringResource(R.string.ui_every_enabled_provider_is_checked_for_each_suppo),
                     color = MutedBlue, style = MaterialTheme.typography.bodySmall)
                 order.forEachIndexed { index, source ->
+                    var dragY by remember(source) { mutableFloatStateOf(0f) }
+                    val reorderLabel = stringResource(R.string.reorder_provider, source.label)
+                    val moveUpLabel = stringResource(R.string.move_up)
+                    val moveDownLabel = stringResource(R.string.move_down)
+                    Surface(color = MaterialTheme.colorScheme.surfaceContainer,
+                        shape = MaterialTheme.shapes.medium) {
                     Row(Modifier.fillMaxWidth().clickable {
                         chosen = if (source in chosen) chosen - source else chosen + source
-                    }, verticalAlignment = Alignment.CenterVertically) {
+                    }.padding(horizontal = 12.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
                             Text(source.label)
                             Text(source.riskLevel, color = MutedBlue,
                                 style = MaterialTheme.typography.bodySmall)
                         }
-                        TextButton(onClick = {
-                            if (index > 0) order = order.toMutableList().apply {
-                                add(index - 1, removeAt(index))
+                        Text("⠿", modifier = Modifier
+                            .padding(12.dp)
+                            .pointerInput(source, order) {
+                                detectDragGesturesAfterLongPress(
+                                    onDragEnd = {
+                                        val steps = (dragY / rowHeightPx).toInt().let {
+                                            if (it == 0 && kotlin.math.abs(dragY) > rowHeightPx / 3)
+                                                if (dragY > 0) 1 else -1 else it
+                                        }
+                                        moveProvider(source, steps)
+                                        dragY = 0f
+                                    },
+                                    onDragCancel = { dragY = 0f },
+                                    onDrag = { change, amount -> change.consume(); dragY += amount.y })
                             }
-                        }, enabled = index > 0,
-                            modifier = Modifier.semantics { contentDescription = "Move ${source.label} up" }) {
-                            Text(stringResource(R.string.move_up_arrow)) }
-                        TextButton(onClick = {
-                            if (index < order.lastIndex) order = order.toMutableList().apply {
-                                add(index + 1, removeAt(index))
-                            }
-                        }, enabled = index < order.lastIndex,
-                            modifier = Modifier.semantics { contentDescription = "Move ${source.label} down" }) {
-                            Text(stringResource(R.string.move_down_arrow)) }
+                            .semantics {
+                                contentDescription = reorderLabel
+                                customActions = listOf(
+                                    CustomAccessibilityAction(moveUpLabel) { moveProvider(source, -1) },
+                                    CustomAccessibilityAction(moveDownLabel) { moveProvider(source, 1) })
+                            })
                         Switch(checked = source in chosen, onCheckedChange = {
                             chosen = if (it) chosen + source else chosen - source
                         })
+                    }
                     }
                 }
             }

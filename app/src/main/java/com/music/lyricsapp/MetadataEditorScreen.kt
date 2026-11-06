@@ -14,6 +14,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CenterAlignedTopAppBar
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -37,6 +40,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun MetadataEditorScreen(
     track: LocalTrack, onBack: () -> Unit, onSaved: (String) -> Unit,
@@ -130,10 +134,25 @@ internal fun MetadataEditorScreen(
         }
     }
 
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp),
+    Scaffold(contentWindowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0), topBar = {
+        CenterAlignedTopAppBar(title = { Text(stringResource(R.string.edit_track_metadata)) },
+            windowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0),
+            navigationIcon = { TextButton(onClick = onBack, enabled = !busy) {
+                Text(stringResource(R.string.cancel))
+            } })
+    }, bottomBar = {
+        if (original != null) androidx.compose.material3.Surface(
+            color = MaterialTheme.colorScheme.surfaceContainer) {
+            Button(onClick = { confirm = true }, enabled = editable && !busy &&
+                (edited != original.values || cover != null || removeCover),
+                modifier = Modifier.fillMaxWidth().padding(16.dp)) {
+                Text(stringResource(R.string.save))
+            }
+        }
+    }) { scaffoldPadding ->
+    Column(Modifier.fillMaxSize().padding(scaffoldPadding).verticalScroll(rememberScrollState())
+        .padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        TextButton(onClick = onBack, enabled = !busy) { Text(stringResource(R.string.library)) }
-        Text(stringResource(R.string.edit_track_metadata), style = MaterialTheme.typography.headlineMedium)
         Text(track.name, style = MaterialTheme.typography.bodySmall)
         if (!editable) Text(stringResource(R.string.metadata_read_only_format), color = MutedBlue)
         if (message.isNotBlank()) Text(message, color = SoftCoral)
@@ -143,20 +162,29 @@ internal fun MetadataEditorScreen(
             @Composable fun field(label: String, old: String, value: String, change: (String) -> Unit,
                                   multiline: Boolean = false) {
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text(stringResource(R.string.metadata_original_value, label, old.ifBlank {
-                        context.getString(R.string.metadata_empty) }),
-                        style = MaterialTheme.typography.bodySmall, color = MutedBlue)
                     OutlinedTextField(value = value, onValueChange = change,
                         label = { Text(label) }, enabled = editable && !busy,
                         minLines = if (multiline) 5 else 1,
                         maxLines = if (multiline) 12 else 1,
                         modifier = Modifier.fillMaxWidth())
+                    if (value != old) Row(Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween) {
+                        Text(stringResource(R.string.metadata_original_value, label, old.ifBlank {
+                            context.getString(R.string.metadata_empty) }),
+                            style = MaterialTheme.typography.bodySmall, color = MutedBlue,
+                            modifier = Modifier.weight(1f))
+                        TextButton(onClick = { change(old) }, enabled = editable && !busy) {
+                            Text(stringResource(R.string.timing_reset))
+                        }
+                    }
                 }
             }
+            Text(stringResource(R.string.section_basics), style = MaterialTheme.typography.titleLarge)
             field(stringResource(R.string.metadata_title), original.values.title, edited.title,
                 { edited = edited.copy(title = it) })
             field(stringResource(R.string.metadata_artist), original.values.artist, edited.artist,
                 { edited = edited.copy(artist = it) })
+            Text(stringResource(R.string.section_album), style = MaterialTheme.typography.titleLarge)
             field(stringResource(R.string.metadata_album_artist), original.values.albumArtist, edited.albumArtist,
                 { edited = edited.copy(albumArtist = it) })
             field(stringResource(R.string.metadata_album), original.values.album, edited.album,
@@ -169,12 +197,15 @@ internal fun MetadataEditorScreen(
                 { edited = edited.copy(trackNumber = it) })
             field(stringResource(R.string.metadata_disc_number), original.values.discNumber, edited.discNumber,
                 { edited = edited.copy(discNumber = it) })
+            Text(stringResource(R.string.section_credits), style = MaterialTheme.typography.titleLarge)
             field(stringResource(R.string.metadata_composer), original.values.composer, edited.composer,
                 { edited = edited.copy(composer = it) })
             field(stringResource(R.string.metadata_comment), original.values.comment, edited.comment,
                 { edited = edited.copy(comment = it) }, true)
+            Text(stringResource(R.string.metadata_lyrics), style = MaterialTheme.typography.titleLarge)
             field(stringResource(R.string.metadata_lyrics), original.values.lyrics, edited.lyrics,
                 { edited = edited.copy(lyrics = it) }, true)
+            Text(stringResource(R.string.section_cover_art), style = MaterialTheme.typography.titleLarge)
             Text(stringResource(R.string.metadata_original_artwork,
                 if (original.coverDigest == null) stringResource(R.string.metadata_empty)
                 else stringResource(R.string.metadata_present)))
@@ -197,9 +228,8 @@ internal fun MetadataEditorScreen(
             }, enabled = editable && !busy) { Text(stringResource(R.string.metadata_remove_artwork)) }
             Text(stringResource(R.string.metadata_save_explanation), color = MutedBlue,
                 style = MaterialTheme.typography.bodySmall)
-            Button(onClick = { confirm = true }, enabled = editable && !busy &&
-                (edited != original.values || cover != null || removeCover)) { Text(stringResource(R.string.save)) }
         }
+    }
     }
     if (confirm) AlertDialog(onDismissRequest = { confirm = false },
         title = { Text(stringResource(R.string.metadata_confirm_title)) },

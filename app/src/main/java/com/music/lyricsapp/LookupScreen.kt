@@ -15,6 +15,9 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.LargeTopAppBar
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -45,6 +48,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.UUID
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun LookupScreen(onDraft: (String) -> Unit, onSettings: () -> Unit) {
     val context = LocalContext.current
@@ -132,12 +136,13 @@ internal fun LookupScreen(onDraft: (String) -> Unit, onSettings: () -> Unit) {
     }
     val selected = found.firstOrNull { it.first.name == selectedProvider }
         ?: found.firstOrNull { it.second.state == "found" }
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp),
+    Scaffold(contentWindowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0),
+        topBar = { LargeTopAppBar(title = { Text(stringResource(R.string.lookup)) },
+        windowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0)) }) { padding ->
+    LazyColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(20.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)) {
         item {
             Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
-                Text(stringResource(R.string.lookup), style = MaterialTheme.typography.headlineLarge,
-                    fontWeight = FontWeight.Bold)
                 Text(stringResource(R.string.lookup_intro), color = MutedBlue)
                 OutlinedTextField(title, { title = it }, label = { Text(stringResource(R.string.title)) },
                     modifier = Modifier.fillMaxWidth(), singleLine = true)
@@ -213,5 +218,6 @@ internal fun LookupScreen(onDraft: (String) -> Unit, onSettings: () -> Unit) {
                 }
             }
         }
+    }
     }
 }

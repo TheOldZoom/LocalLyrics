@@ -33,12 +33,14 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -70,6 +72,7 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.music.lyricsapp.core.LrcLib
@@ -133,13 +136,14 @@ internal fun TrackDetail(
     val selectedCandidate = candidates.firstOrNull { it.source.name == track.selectedProvider }
     val confidence = selectedCandidate?.let { LyricConfidence.score(track, it, candidates) }
     val fetchedIsInFile = track.proposed.isNotBlank() && track.existing.trim() == track.proposed.trim()
-    Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = onBack, enabled = !applying) { Text(stringResource(R.string.library_2)) }
-            Spacer(Modifier.weight(1f))
-            StatusPill(track)
-        }
+    Column(Modifier.fillMaxSize().navigationBarsPadding()) {
+        CenterAlignedTopAppBar(
+            title = { Text(track.title, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+            windowInsets = androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0),
+            navigationIcon = { TextButton(onClick = onBack, enabled = !applying) {
+                Text(stringResource(R.string.library_2))
+            } },
+            actions = { StatusPill(track) })
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 20.dp),
             verticalArrangement = Arrangement.spacedBy(18.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically,
@@ -393,13 +397,19 @@ private fun ProviderPicker(
                     Column(Modifier.fillMaxWidth()
                         .clickable(enabled = result?.state == "found") { onSelect(source) }
                         .padding(vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Surface(shape = CircleShape,
+                                color = MaterialTheme.colorScheme.surfaceContainerHigh) {
+                                Text(source.label.take(1), Modifier.padding(10.dp),
+                                    style = MaterialTheme.typography.labelLarge)
+                            }
                             Text(source.label, modifier = Modifier.weight(1f),
                                 color = if (selected) SeaGlass else PaleBlue,
                                 fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal)
                             Text(if (selected) "Selected · $state" else state,
                                 color = when (result?.review) { "wrong" -> SoftCoral; "correct" -> SeaGlass; else -> MutedBlue },
-                                style = MaterialTheme.typography.labelMedium)
+                                style = MaterialTheme.typography.labelMedium, maxLines = 2)
                         }
                         result?.takeIf { it.state == "found" }?.let { candidate ->
                             val preview = remember(candidate.plain) {
@@ -452,12 +462,25 @@ private fun LyricsPanel(
                     color = MutedBlue, style = MaterialTheme.typography.bodySmall)
             }
             if (lines.isEmpty()) {
-                Text(raw, fontFamily = FontFamily.Serif, fontSize = 19.sp, lineHeight = 28.sp)
+                Column(Modifier.fillMaxWidth().heightIn(max = 350.dp).verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    raw.lineSequence().forEach { line ->
+                        val marker = line.trim().let { it.startsWith("[") && it.endsWith("]") }
+                        Text(line.ifBlank { " " },
+                            style = (if (marker) MaterialTheme.typography.labelLarge
+                                else MaterialTheme.typography.bodyLarge).copy(
+                                fontFamily = if (marker) FontFamily.SansSerif else FontFamily.Serif,
+                                lineHeight = if (marker) 22.sp else 28.sp,
+                                textDirection = TextDirection.ContentOrRtl),
+                            color = if (marker) SeaGlass else PaleBlue)
+                    }
+                }
             } else {
                 LazyColumn(Modifier.fillMaxWidth().height(350.dp), state = listState,
                     verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     itemsIndexed(lines) { index, line ->
                         val active = index == activeIndex
+                        val marker = line.text.trim().let { it.startsWith("[") && it.endsWith("]") }
                         val rendered = if (line.isGap) AnnotatedString("♪")
                             else if (active && line.words.isNotEmpty()) buildAnnotatedString {
                             append(line.text)
@@ -478,8 +501,11 @@ private fun LyricsPanel(
                                 Text(timestamp(line.timeMs), color = if (active) SeaGlass else MutedBlue,
                                     style = MaterialTheme.typography.labelMedium,
                                     modifier = Modifier.width(43.dp).padding(top = 5.dp))
-                                Text(rendered, color = if (active && line.words.isEmpty()) SeaGlass else PaleBlue,
-                                    fontFamily = FontFamily.Serif, fontSize = 19.sp, lineHeight = 27.sp,
+                                Text(rendered, color = if (marker || (active && line.words.isEmpty())) SeaGlass else PaleBlue,
+                                    fontFamily = if (marker) FontFamily.SansSerif else FontFamily.Serif,
+                                    fontSize = if (marker) 14.sp else 19.sp, lineHeight = 27.sp,
+                                    style = MaterialTheme.typography.bodyLarge.copy(textDirection = TextDirection.ContentOrRtl,
+                                        fontWeight = if (marker) FontWeight.SemiBold else FontWeight.Normal),
                                     modifier = Modifier.weight(1f))
                             }
                         }
