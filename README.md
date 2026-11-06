@@ -1,6 +1,6 @@
 # Lyrics
 
-A native Android app that scans a folder of local music, fetches lyrics, and embeds them in the audio files. It runs on the phone with no app server. Network requests go directly from the device to the selected lyric providers; audio files stay on the device.
+A native Android app that shows indexed device music and music from a selected folder, fetches lyrics for folder tracks, and edits audio metadata with explicit file approval. It runs on the phone with no app server. Network requests go directly from the device to the selected lyric providers; audio files stay on the device.
 
 ## Build
 
@@ -12,13 +12,15 @@ Install Android SDK 36 and JDK 17, then run:
 
 Install `app/build/outputs/apk/debug/app-debug.apk` on a device running Android 8.0 or newer.
 
-GitHub Actions builds a debug APK on pushes and pull requests. Every push to `master` also builds a minified signed APK and publishes a GitHub Release tagged `build-<commit SHA>`. This requires the `LYRICS_KEYSTORE_BASE64`, `LYRICS_KEYSTORE_PASSWORD`, `LYRICS_KEY_ALIAS`, and `LYRICS_KEY_PASSWORD` repository secrets; the release job fails if they are missing. Keep the signing key backed up outside the repository. Gradle uses the nearest `vMAJOR.MINOR.PATCH` tag in the version name and the full-history Git commit count as the increasing Android version code. The release automation does not run the file-safety tests that remain prohibited by the current maintainer instruction; review `docs/overhaul/manual-tests.md` before pushing to `master`.
-
-Set the four secrets under **Repository Settings → Secrets and variables → Actions** before the first release push. `LYRICS_KEYSTORE_BASE64` is the Base64 encoding of the release keystore file; the other values are its store password, key alias, and key password. Keep the original keystore and passwords backed up so later APKs can update earlier ones. Existing debug-signed installs use a different certificate and cannot be updated in place by the signed release APK.
+GitHub Actions builds a debug APK on pushes and pull requests. Every push to `master` also publishes `app-debug.apk` as a GitHub prerelease tagged `debug-<commit SHA>`. No release keystore or signing secrets are used. Android signs debug APKs with a debug key; CI may use a different key on a later run, so an older debug APK may need to be uninstalled before installing the new one. Gradle uses the nearest `vMAJOR.MINOR.PATCH` tag in the version name and the full-history Git commit count as the increasing Android version code. The automation does not run the file-safety checks; review `docs/overhaul/manual-tests.md` before pushing to `master`.
 
 ## Use
 
-Choose a music folder with Android's folder picker. Lyrics scans it on open, on manual request, and in constrained background work. Online lookup starts only after you accept the first-run explanation of what track metadata is sent. Automatic writing is off by default; if enabled, it requires provider agreement and strong timing and duration evidence, and skips files with embedded lyrics. You can search and sort the library, review results, edit lyrics or timing, export LRC or plain text, edit a lookup title or artist, retry a match, and write a result manually. Existing embedded lyrics are preserved unless you deliberately retry and replace them.
+The workspace has **Library**, **Lookup**, **Maker**, and **Settings** tabs. Start a blank Maker draft, paste text, or search by title and artist in Lookup without choosing a folder. Choose a provider result to save it as a draft. Drafts autosave across restarts. In Maker, edit and reorder lines in Text, then attach one local audio file and use Timing to stamp lines and words. Export portable line LRC with title and artist headers, plain text, or enhanced LRC separately. Embedding asks for the audio file's parent folder and uses the same verified backup-and-swap writer as Library; saving a draft or exporting never changes audio.
+
+Tap **Show device music** and grant audio read access once to see indexed tracks across shared storage. Choose a music folder with Android's folder picker for files the index misses. Lyrics scans the library on open and on manual request. Online lookup for folder tracks starts only after you accept the first-run explanation of what track metadata is sent; indexed tracks do not start provider searches. Automatic writing is off by default and never writes indexed tracks. You can search and sort the library, review folder results, edit lyrics or timing, export LRC or plain text, edit a lookup title or artist, retry a match, and write a result manually. Existing embedded lyrics are preserved unless you deliberately retry and replace them.
+
+Open a track and choose **Edit track details** to review and change title, artist, album artist, album, genre, year, track and disc numbers, composer, comment, lyrics, and cover art. Choose a local JPEG or PNG, or copy embedded cover art from another audio file. The source file is only read. MP3, FLAC, M4A, and audio MP4 are editable; other formats show read-only values. Save prepares and verifies a tagged copy before requesting access to the target file. MediaStore writes require per-file approval on Android 10+ or the legacy write permission on Android 8–9, and retain an app-private original in **Needs attention**. Folder writes retain a sibling backup. The filename stays the same. Editing track details does not enable automatic writing or start a provider search.
 
 The library shows fetched results awaiting review, results you marked correct, results you marked wrong, lyrics already in files, and files that need attention. Open a track to read all fetched lyrics and mark the result **Correct** or **Wrong**. A wrong result is kept visible for comparison and cannot be written manually until you change its review or search again. If automatic writing is enabled, lyrics can be added before review; marking them wrong does not remove them from the audio file. Search again to find a replacement.
 
@@ -26,7 +28,7 @@ Under **Settings**, choose and reorder providers. A newly enabled provider is qu
 
 MP3, FLAC, M4A, audio MP4, and WebM can be tagged. AAC and Ogg/Opus remain visible but unsupported for writing pending file-preservation evidence. Writers stream audio payloads and inspect bounded metadata. A tagged file is written and its standard lyrics field verified before it replaces the original. The original is retained as a named backup, available through **Restore original** and **Needs attention**. If a folder provider cannot rename files, the tagged copy remains alongside the original. The app needs continuing access to the chosen folder, so keep its Android document permission.
 
-**Release status:** this overhaul compiles and an unsigned minified release APK builds, but required tests and manual file-safety checks have not been run. It is not ready for public release. See [overhaul summary](docs/overhaul/SUMMARY.md) for the exact gaps.
+**Release status:** the automated GitHub publication is a debug prerelease. Required tests and manual file-safety checks have not been run, so it is not ready for a production release. See [overhaul summary](docs/overhaul/SUMMARY.md) for the exact gaps.
 
 ## Legal and sources
 
@@ -35,3 +37,5 @@ Lyrics and sound recordings can be separate copyrighted works. A copy of a lyric
 Only enabled providers receive lookup metadata. Most routes in this app are unofficial or scrape third-party pages and may change, disappear, or carry terms that differ from the app's GPL license. The **Sources** dialog labels each route's operational risk and lets you turn it off. The app ships no provider lyrics or audio catalogue.
 
 The app contains the [lyrics providers and matching logic from BitChord](https://github.com/kushagrasinghx/BitChord), with only the HTTP and YouTube Music requests needed for lyrics. It also includes adapted metadata readers and writers. The source is distributed under [GPL-3.0](LICENSE). Provider availability can vary by region, credentials, and service changes. A provider's HTTP 402 response cannot be bypassed locally; the app uses the source list and fallback logic in the included lyrics code.
+
+The track details editor uses [JAudioTagger](https://jthink.net/jaudiotagger/) under its LGPL license. The [GPL PixelPlayerOSS](https://github.com/PixelPlayerHQ/PixelPlayerOSS) repository was reviewed for workflow design; its code and assets were not copied. The proprietary PixelPlayer repository is not used.

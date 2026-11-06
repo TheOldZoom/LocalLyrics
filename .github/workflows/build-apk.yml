@@ -42,62 +42,30 @@ jobs:
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
 
-  release:
+  publish_debug:
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     needs: build
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
-      - name: Check out release commit
-        uses: actions/checkout@v7
+      - name: Download the built debug APK
+        uses: actions/download-artifact@v7
         with:
-          fetch-depth: 0
+          name: lyrics-debug-apk
+          path: release-apk
 
-      - name: Set up JDK 17
-        uses: actions/setup-java@v6
-        with:
-          distribution: temurin
-          java-version: '17'
-          cache: gradle
-
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v4
-
-      - name: Install Android platform and build tools
-        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
-
-      - name: Prepare release signing
-        env:
-          LYRICS_KEYSTORE_BASE64: ${{ secrets.LYRICS_KEYSTORE_BASE64 }}
-          LYRICS_KEYSTORE_PASSWORD: ${{ secrets.LYRICS_KEYSTORE_PASSWORD }}
-          LYRICS_KEY_ALIAS: ${{ secrets.LYRICS_KEY_ALIAS }}
-          LYRICS_KEY_PASSWORD: ${{ secrets.LYRICS_KEY_PASSWORD }}
-        run: |
-          test -n "$LYRICS_KEYSTORE_BASE64"
-          test -n "$LYRICS_KEYSTORE_PASSWORD"
-          test -n "$LYRICS_KEY_ALIAS"
-          test -n "$LYRICS_KEY_PASSWORD"
-          printf '%s' "$LYRICS_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/lyrics-release.jks"
-
-      - name: Build signed release APK
-        env:
-          LYRICS_KEYSTORE_FILE: ${{ runner.temp }}/lyrics-release.jks
-          LYRICS_KEYSTORE_PASSWORD: ${{ secrets.LYRICS_KEYSTORE_PASSWORD }}
-          LYRICS_KEY_ALIAS: ${{ secrets.LYRICS_KEY_ALIAS }}
-          LYRICS_KEY_PASSWORD: ${{ secrets.LYRICS_KEY_PASSWORD }}
-        run: ./gradlew --no-daemon :app:assembleRelease
-
-      - name: Publish signed GitHub Release
+      - name: Publish debug GitHub prerelease
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          test -f app/build/outputs/apk/release/app-release.apk
-          tag="build-${GITHUB_SHA:0:12}"
+          test -f release-apk/app-debug.apk
+          tag="debug-${GITHUB_SHA:0:12}"
           if ! gh release view "$tag" >/dev/null 2>&1; then
-            gh release create "$tag" app/build/outputs/apk/release/app-release.apk \
+            gh release create "$tag" release-apk/app-debug.apk \
               --target "$GITHUB_SHA" \
-              --title "Lyrics ${tag}" \
-              --notes "Signed release APK built from commit ${GITHUB_SHA}."
+              --title "Lyrics debug ${tag}" \
+              --prerelease --latest=false \
+              --notes "Debug APK built from commit ${GITHUB_SHA}. The CI debug key can change between runs, so uninstall an older debug APK if an update is rejected."
           fi

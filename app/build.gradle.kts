@@ -17,13 +17,6 @@ val releaseTag = gitValue("describe", "--tags", "--abbrev=0", "--match", "v[0-9]
 // previous push. CI fetches full Git history so this count is stable there.
 val releaseVersionCode = gitValue("rev-list", "--count", "HEAD")?.toIntOrNull()
     ?.coerceAtLeast(1) ?: 1
-val releaseStore = providers.environmentVariable("LYRICS_KEYSTORE_FILE").orNull
-val releaseStorePassword = providers.environmentVariable("LYRICS_KEYSTORE_PASSWORD").orNull
-val releaseAlias = providers.environmentVariable("LYRICS_KEY_ALIAS").orNull
-val releaseKeyPassword = providers.environmentVariable("LYRICS_KEY_PASSWORD").orNull
-val hasReleaseSigning = listOf(releaseStore, releaseStorePassword, releaseAlias, releaseKeyPassword)
-    .all { !it.isNullOrBlank() }
-
 android {
     namespace = "com.music.lyricsapp"
     compileSdk = 36
@@ -34,20 +27,11 @@ android {
         versionCode = releaseVersionCode
         versionName = "$releaseTag-build.$releaseVersionCode"
     }
-    signingConfigs {
-        if (hasReleaseSigning) create("release") {
-            storeFile = file(requireNotNull(releaseStore))
-            storePassword = releaseStorePassword
-            keyAlias = releaseAlias
-            keyPassword = releaseKeyPassword
-        }
-    }
     buildTypes {
         getByName("release") {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            if (hasReleaseSigning) signingConfig = signingConfigs.getByName("release")
         }
     }
     buildFeatures { compose = true }
@@ -77,6 +61,8 @@ dependencies {
     implementation("androidx.room:room-runtime:2.8.5")
     implementation("androidx.room:room-ktx:2.8.5")
     implementation("androidx.navigation:navigation-compose:2.9.8")
+    // LGPL library used only for editable, app-private metadata candidates.
+    implementation("net.jthink:jaudiotagger:3.0.1")
     ksp("androidx.room:room-compiler:2.8.5")
     testImplementation("junit:junit:4.13.2")
 }

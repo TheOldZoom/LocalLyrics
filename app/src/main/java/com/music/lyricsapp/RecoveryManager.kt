@@ -13,22 +13,30 @@ object RecoveryManager {
     data class Artifact(
         val uri: String, val name: String, val originalName: String,
         val kind: Kind, val size: Long, val modified: Long,
+        val mediaId: String = "", val targetUri: String = "", val needsRestore: Boolean = false,
     )
 
     suspend fun list(context: Context): List<Artifact> = withContext(Dispatchers.IO) {
-        val root = root(context)
-        buildList {
+        val folderArtifacts = if (LibrarySettings.folder(context).isBlank()) emptyList() else runCatching { buildList {
             fun walk(folder: DocumentFile) {
                 folder.listFiles().forEach { child ->
                     if (child.isDirectory) walk(child)
                     else if (child.isFile) classify(child)?.let(::add)
                 }
             }
-            walk(root)
-        }.sortedWith(compareByDescending<Artifact> { it.modified }.thenBy { it.name })
+            walk(root(context))
+        } }.getOrDefault(emptyList())
+        (folderArtifacts + MediaRecovery.list(context).map { entry ->
+            Artifact("media-recovery:${entry.id}", entry.name, entry.name, Kind.BACKUP,
+                entry.original.length(), entry.created, entry.id, entry.targetUri,
+                entry.state == "writing" || entry.state == "restore_needed")
+        }).sortedWith(compareByDescending<Artifact> { it.needsRestore }
+            .thenByDescending { it.modified }.thenBy { it.name })
     }
 
     suspend fun restore(context: Context, backupUri: String): String = withContext(Dispatchers.IO) {
+        if (backupUri.startsWith("media-recovery:"))
+            return@withContext MediaRecovery.restore(context, backupUri.removePrefix("media-recovery:"))
         val (parent, backup) = locate(root(context), backupUri) ?: error("Backup is no longer available")
         val artifact = classify(backup)?.takeIf { it.kind == Kind.BACKUP }
             ?: error("This document is not a lyrics backup")
@@ -53,6 +61,8 @@ object RecoveryManager {
     }
 
     suspend fun delete(context: Context, artifactUri: String): String = withContext(Dispatchers.IO) {
+        if (artifactUri.startsWith("media-recovery:"))
+            return@withContext MediaRecovery.delete(context, artifactUri.removePrefix("media-recovery:"))
         val (parent, file) = locate(root(context), artifactUri) ?: error("Recovery file is no longer available")
         val artifact = classify(file) ?: error("This document is not a recovery file")
         val current = parent.findFile(artifact.originalName)

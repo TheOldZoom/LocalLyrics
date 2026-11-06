@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -37,6 +38,8 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
@@ -84,6 +87,7 @@ import kotlinx.coroutines.withContext
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun TrackDetail(
     track: LocalTrack, candidates: List<ProviderCandidate>, enabledSources: Set<LyricsSource>,
@@ -93,6 +97,7 @@ internal fun TrackDetail(
     onReview: (String) -> Unit, onExportFetched: (Boolean) -> Unit,
     onExportEmbedded: (Boolean) -> Unit, onApply: () -> Unit, onRestore: () -> Unit,
     onNextReview: () -> Unit, onEditLyrics: (String, String) -> Unit,
+    onOpenMaker: () -> Unit, onOpenMetadata: () -> Unit,
     onRetry: (String, String) -> Unit, onDismiss: () -> Unit, onClearMessage: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -118,6 +123,7 @@ internal fun TrackDetail(
     var editedText by remember(track.uri) { mutableStateOf("") }
     var offsetMs by remember(track.uri) { mutableStateOf(0) }
     var embeddedEnhanced by remember(track.uri) { mutableStateOf("") }
+    var showProviders by remember(track.uri) { mutableStateOf(false) }
     LaunchedEffect(track.uri, track.existing) {
         if (track.existing.isNotBlank()) {
             val lines = EmbeddedLyrics.forUri(context, track.uri, track.name.substringAfterLast('.').lowercase())
@@ -136,15 +142,27 @@ internal fun TrackDetail(
         }
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 20.dp),
             verticalArrangement = Arrangement.spacedBy(18.dp)) {
-            Column {
-                Text(track.title, fontSize = 29.sp, lineHeight = 34.sp, fontWeight = FontWeight.Bold)
-                Text(track.artist.ifBlank { "Unknown artist" }, color = MutedBlue, fontSize = 16.sp)
-                Text(track.name, color = MutedBlue, style = MaterialTheme.typography.bodySmall)
+            Row(verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                ArtworkTile(track.title, Modifier.size(104.dp), track.uri)
+                Column(Modifier.weight(1f)) {
+                    Text(track.title, fontSize = 29.sp, lineHeight = 34.sp, fontWeight = FontWeight.Bold)
+                    Text(track.artist.ifBlank { "Unknown artist" }, color = MutedBlue, fontSize = 16.sp)
+                    Text(track.name, color = MutedBlue, style = MaterialTheme.typography.bodySmall)
+                }
             }
             if (message.isNotBlank()) MessageBanner(message, onClearMessage)
             PlayerPanel(player, track.durationMs)
-            ProviderPicker(track, candidates, enabledSources, onSelectProvider,
-                onRefreshProviders, onOpenSources)
+            OutlinedButton(onClick = onOpenMetadata, enabled = !applying && !reviewing) {
+                Text(stringResource(R.string.edit_track_metadata))
+            }
+            OutlinedButton(onClick = onOpenMaker, enabled = !applying && !reviewing &&
+                track.status !in setOf("discovered", "inspecting", "metadata_error")) {
+                Text(stringResource(R.string.open_in_maker))
+            }
+            if (!MediaLibrary.isIndexed(track.uri)) OutlinedButton(onClick = { showProviders = true }) {
+                Text(stringResource(R.string.compare_results))
+            }
             if (track.review == "wrong") {
                 Surface(color = SoftCoral.copy(alpha = 0.14f), shape = RoundedCornerShape(16.dp)) {
                     Text(if (fetchedIsInFile) "You marked these lyrics wrong. They are still in the audio file. Search again to find a replacement."
@@ -202,12 +220,13 @@ internal fun TrackDetail(
                 Surface(color = CardBlue, shape = RoundedCornerShape(18.dp)) {
                     Text(track.error.ifBlank { when (track.status) {
                         "unsupported" -> "This audio format cannot be tagged by the app yet."
+                        "indexed" -> context.getString(R.string.indexed_open_editor_for_lyrics)
                         "new" -> "The app is looking for lyrics."
                         else -> "No lyrics are available for this file yet."
                     } }, modifier = Modifier.padding(18.dp), color = MutedBlue)
                 }
             }
-            if (track.status != "unsupported") {
+            if (track.status != "unsupported" && !MediaLibrary.isIndexed(track.uri)) {
                 Surface(color = CardBlue, shape = RoundedCornerShape(18.dp)) {
                     Column(Modifier.fillMaxWidth().padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         Text(stringResource(R.string.ui_search_again), style = MaterialTheme.typography.titleMedium)
@@ -304,6 +323,10 @@ internal fun TrackDetail(
             },
             dismissButton = { TextButton(onClick = { showEditor = false }) { Text(stringResource(R.string.cancel)) } },
         )
+    }
+    if (showProviders) ModalBottomSheet(onDismissRequest = { showProviders = false }) {
+        ProviderPicker(track, candidates, enabledSources, onSelectProvider,
+            onRefreshProviders, onOpenSources)
     }
 }
 

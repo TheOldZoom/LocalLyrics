@@ -28,10 +28,13 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.MutableStateFlow
 import java.util.concurrent.TimeUnit
+import java.util.Collections
 
 object LibrarySettings {
     private const val PREFS = "lyrics_settings"
-    data class ScanProgress(val processed: Int = 0, val active: Boolean = false)
+    data class ScanProgress(val discovered: Int = 0, val inspected: Int = 0, val active: Boolean = false) {
+        val processed: Int get() = inspected
+    }
     val scanProgress = MutableStateFlow(ScanProgress())
     fun folder(context: Context): String = context.getSharedPreferences(PREFS, 0).getString("folder", "").orEmpty()
     fun setFolder(context: Context, uri: String) {
@@ -91,10 +94,10 @@ object LibrarySettings {
         manager.enqueueUniquePeriodicWork("lyrics_new_files", ExistingPeriodicWorkPolicy.UPDATE,
             PeriodicWorkRequestBuilder<LibraryWorker>(6, TimeUnit.HOURS).setConstraints(constraints).build())
     }
-    fun scanNow(context: Context, priorityUri: String? = null) {
+    fun scanNow(context: Context, priorityUri: String? = null, lookup: Boolean = true) {
         WorkManager.getInstance(context).enqueueUniqueWork("lyrics_scan_now", ExistingWorkPolicy.REPLACE,
             OneTimeWorkRequestBuilder<LibraryWorker>()
-                .setInputData(workDataOf("priority_uri" to priorityUri.orEmpty())).build())
+                .setInputData(workDataOf("priority_uri" to priorityUri.orEmpty(), "lookup" to lookup)).build())
     }
 }
 
@@ -103,38 +106,48 @@ class LibraryWorker(context: Context, parameters: WorkerParameters) : CoroutineW
     private data class AudioTags(val title: String, val artist: String, val album: String, val durationMs: Long)
     override suspend fun doWork(): Result = scanMutex.withLock { withContext(Dispatchers.IO) {
         val context = applicationContext
-        val treeUri = LibrarySettings.folder(context).takeIf { it.isNotBlank() } ?: return@withContext Result.success()
-        val root = DocumentFile.fromTreeUri(context, Uri.parse(treeUri)) ?: return@withContext Result.failure()
-        if (!root.canRead()) return@withContext Result.failure()
         val store = LyricStore(context)
         LibrarySettings.scanProgress.value = LibrarySettings.ScanProgress(active = true)
         try {
+            MediaLibrary.scan(context, store) { isStopped }
+            val treeUri = LibrarySettings.folder(context).takeIf { it.isNotBlank() }
+                ?: return@withContext Result.success()
+            val root = DocumentFile.fromTreeUri(context, Uri.parse(treeUri))
+                ?: return@withContext Result.failure()
+            if (!root.canRead()) return@withContext Result.failure()
             PaxSenix.setApiKey(LibrarySettings.paxKey(context))
             val seen = mutableSetOf<String>()
-            var processed = 0
+            var discovered = 0
+            var inspectedCount = 0
+            var complete = true
             suspend fun walk(folder: DocumentFile) {
+                if (!folder.canRead()) { complete = false; return }
                 for (child in folder.listFiles()) {
-                    if (isStopped) return
+                    if (isStopped) { complete = false; return }
                     if (child.isDirectory) { walk(child); continue }
                     if (!child.isFile) continue
                     val name = child.name.orEmpty()
                     // Recovery artifacts belong to the user until they explicitly remove them.
                     // Never index them as music or mutate them during a scan.
                     if (".lyrics-backup-" in name || ".tagged-" in name) continue
-                    processed++
-                    if (processed % 50 == 0) {
-                        LibrarySettings.scanProgress.value = LibrarySettings.ScanProgress(processed, true)
-                        setProgress(workDataOf("scanned" to processed))
-                    }
                     val extension = name.substringAfterLast('.', "").lowercase()
                     if (extension !in setOf("mp3", "m4a", "mp4", "flac", "ogg", "opus", "aac", "webm", "dsf", "dff")) continue
                     val supported = extension in setOf("mp3", "flac", "m4a", "webm") ||
                         (extension == "mp4" && child.type?.startsWith("audio/") == true)
                     val uri = child.uri.toString()
                     seen += uri
+                    discovered++
                     val signature = "${child.length()}:${child.lastModified()}:$name"
+                    store.discovered(uri, name, signature)
+                    if (discovered % 10 == 0) {
+                        LibrarySettings.scanProgress.value = LibrarySettings.ScanProgress(discovered, inspectedCount, true)
+                        setProgress(workDataOf("discovered" to discovered, "inspected" to inspectedCount))
+                    }
                     val prior = store.get(uri)
-                    if (prior?.signature == signature && prior.status != "metadata_error") continue
+                    if (prior?.signature == signature && prior.status !in setOf("metadata_error", "discovered", "inspecting")) {
+                        inspectedCount++
+                        continue
+                    }
                     val tags = if (supported) metadata(context, child.uri, name, folder.name.orEmpty())
                         else AudioTags(name.substringBeforeLast('.'), "", "", 0L)
                     val inspected: kotlin.Result<String?> = if (supported) kotlin.runCatching {
@@ -144,29 +157,69 @@ class LibraryWorker(context: Context, parameters: WorkerParameters) : CoroutineW
                         store.scanned(LocalTrack(uri, name, tags.title, tags.artist, tags.album,
                             tags.durationMs, signature, "metadata_error", "", "", "", "",
                             "Could not safely inspect embedded lyrics: ${inspected.exceptionOrNull()?.message.orEmpty()}"))
+                        inspectedCount++
                         continue
                     }
                     val existing = inspected.getOrNull().orEmpty()
                     store.scanned(LocalTrack(uri, name, tags.title, tags.artist, tags.album, tags.durationMs,
                         signature, if (!supported) "unsupported" else if (existing.isNotBlank()) "existing" else "new",
                         "", "", "", existing, ""))
+                    inspectedCount++
                 }
             }
             walk(root)
-            LibrarySettings.scanProgress.value = LibrarySettings.ScanProgress(processed, true)
-            setProgress(workDataOf("scanned" to processed))
-            if (!isStopped) store.removeMissing(seen)
+            LibrarySettings.scanProgress.value = LibrarySettings.ScanProgress(discovered, inspectedCount, true)
+            setProgress(workDataOf("discovered" to discovered, "inspected" to inspectedCount))
+            if (!complete || isStopped) return@withContext Result.retry()
+            store.removeMissing(seen)
+            if (!inputData.getBoolean("lookup", true)) return@withContext Result.success()
             if (!LibrarySettings.privacyIntroSeen(context)) return@withContext Result.success()
+            val sources = LibrarySettings.sources(context)
+            val orderedSources = LibrarySettings.sourceOrder(context)
+            val now = System.currentTimeMillis()
+            val workspaceDao = WorkspaceDatabase.get(context).workspaceDao()
+            val cacheMemo = mutableMapOf<String, List<LookupCacheEntity>>()
+            for (track in store.all()) {
+                if (isStopped) break
+                if (MediaLibrary.isIndexed(track.uri) || MediaLibrary.indexedCopyOf(track.uri) ||
+                    track.status in setOf("metadata_error", "discovered", "inspecting", "unsupported") ||
+                    track.artist.isBlank()) continue
+                val query = com.music.lyricsapp.lookupKey(track.title, track.artist, track.album)
+                val cached = cacheMemo[query] ?: workspaceDao.cached(query).also { cacheMemo[query] = it }
+                val due = dueSources(track, sources, store.candidates(track.uri), now)
+                cached.filter { it.fresh(now) && sources.any { source -> source.name == it.provider } }
+                    .forEach { row ->
+                        val source = LyricsSource.entries.firstOrNull { it.name == row.provider }
+                            ?: return@forEach
+                        if (source !in due) return@forEach
+                        store.setCandidate(track.uri, ProviderCandidate(source, row.state, row.plain,
+                            row.enhanced, fetchedAt = row.fetchedAt, lookupKey = lookupKey(track)))
+                    }
+                val candidates = store.candidates(track.uri)
+                if (track.proposed.isBlank()) {
+                    orderedSources.firstNotNullOfOrNull { source ->
+                        candidates.firstOrNull { it.source == source && it.state == "found" && it.plain.isNotBlank() }
+                    }
+                        ?.let { store.selectCandidate(track.uri, it.source) }
+                }
+                if (dueSources(track, sources, candidates, now).isEmpty() &&
+                    candidates.none { it.state == "found" } && track.status == "new") {
+                    store.update(track.uri, when {
+                        candidates.any { it.state in setOf("error", "timeout") } -> "error"
+                        track.existing.isNotBlank() -> "existing"
+                        else -> "miss"
+                    })
+                }
+            }
             val connectivity = context.getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
             val network = connectivity.activeNetwork
             val capabilities = network?.let(connectivity::getNetworkCapabilities)
             if (capabilities?.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET) != true) {
                 return@withContext Result.retry()
             }
-            val sources = LibrarySettings.sources(context)
-            val now = System.currentTimeMillis()
             val pending = store.all().filter { track ->
-                track.status != "metadata_error" &&
+                !MediaLibrary.isIndexed(track.uri) && !MediaLibrary.indexedCopyOf(track.uri) &&
+                    track.status != "metadata_error" &&
                     track.name.substringAfterLast('.', "").lowercase() in setOf("mp3", "flac", "m4a", "mp4", "webm") &&
                     dueSources(track, sources, store.candidates(track.uri), now).isNotEmpty()
             }.sortedWith(compareBy<LocalTrack> {
@@ -189,6 +242,8 @@ class LibraryWorker(context: Context, parameters: WorkerParameters) : CoroutineW
                     continue
                 }
                 val previousSelection = track.selectedProvider
+                val cacheWrites = Collections.synchronizedList(mutableListOf<LookupCacheEntity>())
+                val query = com.music.lyricsapp.lookupKey(track.title, track.artist, track.album)
                 val videoId = if (LyricsSource.YOUTUBE_MUSIC in due ||
                     LyricsSource.YOUTUBE_TRANSCRIPT in due || LyricsSource.SIMP_MUSIC in due) {
                     withTimeoutOrNull(5_000L) {
@@ -198,7 +253,7 @@ class LibraryWorker(context: Context, parameters: WorkerParameters) : CoroutineW
                 val found = withTimeoutOrNull(60_000L) {
                     LyricsRepository.lyrics(videoId ?: track.uri, track.title, track.artist, track.durationMs,
                         album = track.album.ifBlank { null }, sources = due,
-                        order = LibrarySettings.sourceOrder(context), prioritizeSyllableSync = true,
+                        order = orderedSources, prioritizeSyllableSync = true,
                         collectAll = true,
                         onSourceStarted = { source ->
                             store.setCandidate(track.uri, ProviderCandidate(source, "fetching", lookupKey = key))
@@ -211,10 +266,15 @@ class LibraryWorker(context: Context, parameters: WorkerParameters) : CoroutineW
                                     previousCandidates[source]?.takeIf { it.plain == plain }?.review.orEmpty(),
                                     lookupKey = key)
                             else ProviderCandidate(source, "missing", lookupKey = key))
+                            cacheWrites += LookupCacheEntity(query, source.name,
+                                if (plain.isNotBlank() && plain.length <= 64_000) "found" else "missing",
+                                plain.takeIf { it.length <= 64_000 }.orEmpty(),
+                                result?.lines?.toEnhancedLrc().orEmpty())
                         },
                         onSourceFailure = { source, _ ->
                             ProviderHealth.failure(context, source, System.currentTimeMillis())
                             store.setCandidate(track.uri, ProviderCandidate(source, "error", lookupKey = key))
+                            cacheWrites += LookupCacheEntity(query, source.name, "error")
                         },
                         onSourceCancelled = { source ->
                             if (store.candidates(track.uri).firstOrNull { it.source == source }?.state == "fetching") {
@@ -223,6 +283,7 @@ class LibraryWorker(context: Context, parameters: WorkerParameters) : CoroutineW
                             }
                         })
                 }
+                cacheWrites.forEach { workspaceDao.saveCache(it) }
                 val candidates = store.candidates(track.uri)
                 val current = store.get(track.uri) ?: continue
                 val previousChoice = candidates.firstOrNull { candidate ->
@@ -263,7 +324,7 @@ class LibraryWorker(context: Context, parameters: WorkerParameters) : CoroutineW
         } catch (e: Exception) {
             Result.retry()
         } finally {
-            LibrarySettings.scanProgress.value = LibrarySettings.ScanProgress(active = false)
+            LibrarySettings.scanProgress.value = LibrarySettings.scanProgress.value.copy(active = false)
             store.close()
         }
     } }
@@ -281,7 +342,7 @@ class LibraryWorker(context: Context, parameters: WorkerParameters) : CoroutineW
             val previous = bySource[source]
             previous == null || previous.lookupKey != key || previous.fetchedAt <= 0 ||
                 when (previous.state) {
-                    "found" -> false
+                    "found" -> now - previous.fetchedAt >= 30L * 24 * 60 * 60 * 1000
                     "missing" -> now - previous.fetchedAt >= 6L * 60 * 60 * 1000
                     "error", "timeout" -> now - previous.fetchedAt >= 15L * 60 * 1000
                     else -> true

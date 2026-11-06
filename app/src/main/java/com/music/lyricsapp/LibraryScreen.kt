@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -107,12 +108,15 @@ internal fun LocalTrack.inFilter(filter: TrackFilter): Boolean = when (filter) {
     review == "correct" -> stringResource(R.string.status_marked_correct) to SeaGlass
     status == "applied" -> stringResource(R.string.status_added_review) to WarmGold
     status == "ready" -> stringResource(R.string.status_fetched_review) to WarmGold
+    status == "indexed" -> stringResource(R.string.status_indexed) to SeaGlass
     status == "existing" -> stringResource(R.string.filter_in_file) to SeaGlass
     status == "miss" -> stringResource(R.string.status_no_match) to MutedBlue
     status == "error" -> stringResource(R.string.status_needs_attention) to SoftCoral
     status == "metadata_error" -> stringResource(R.string.status_unsafe_metadata) to SoftCoral
     status == "unsupported" -> stringResource(R.string.status_unsupported) to MutedBlue
     status == "dismissed" -> stringResource(R.string.status_dismissed) to MutedBlue
+    status == "discovered" -> stringResource(R.string.discovered_status) to MutedBlue
+    status == "inspecting" -> stringResource(R.string.inspecting_status) to MutedBlue
     else -> stringResource(R.string.status_searching) to MutedBlue
 }
 
@@ -148,7 +152,9 @@ internal fun NeedsAttentionScreen(
                 Column(Modifier.fillMaxWidth().padding(16.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(artifact.name, fontWeight = FontWeight.SemiBold)
-                    Text("${if (artifact.kind == RecoveryManager.Kind.BACKUP) "Original backup" else "Tagged copy"} · ${artifact.size} bytes",
+                    Text("${if (artifact.needsRestore) stringResource(R.string.metadata_recovery_needed)
+                        else if (artifact.kind == RecoveryManager.Kind.BACKUP) "Original backup"
+                        else "Tagged copy"} · ${artifact.size} bytes",
                         color = MutedBlue, style = MaterialTheme.typography.bodySmall)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         if (artifact.kind == RecoveryManager.Kind.BACKUP) {
@@ -166,9 +172,9 @@ internal fun NeedsAttentionScreen(
 
 @Composable
 internal fun LibraryHome(
-    tracks: List<LocalTrack>, folder: String, autoAdd: Boolean,
+    tracks: List<LocalTrack>, folder: String, autoAdd: Boolean, mediaAccess: Boolean,
     scanProgress: LibrarySettings.ScanProgress, filter: TrackFilter, message: String, busy: Boolean,
-    onFilter: (TrackFilter) -> Unit, onPickFolder: () -> Unit, onScan: () -> Unit,
+    onFilter: (TrackFilter) -> Unit, onPickFolder: () -> Unit, onRequestMedia: () -> Unit, onScan: () -> Unit,
     onSettings: () -> Unit, onAttention: () -> Unit,
     onOpen: (LocalTrack) -> Unit, onMarkSelectedCorrect: (Set<String>) -> Unit,
     onWriteHighConfidence: () -> Unit, onClearMessage: () -> Unit,
@@ -202,14 +208,21 @@ internal fun LibraryHome(
                     }
                     TextButton(onClick = onSettings) { Text(stringResource(R.string.sources)) }
                 }
+                if (!mediaAccess) Button(onClick = onRequestMedia) {
+                    Text(stringResource(R.string.media_library_permission))
+                }
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     Button(onClick = onPickFolder) { Text(if (folder.isBlank()) "Choose music folder" else "Change folder") }
-                    OutlinedButton(onClick = onScan, enabled = folder.isNotBlank()) { Text(stringResource(R.string.scan)) }
+                    OutlinedButton(onClick = onScan, enabled = folder.isNotBlank() || mediaAccess) { Text(stringResource(R.string.scan)) }
                 }
-                if (folder.isNotBlank()) TextButton(onClick = onAttention) { Text(stringResource(R.string.needs_attention_recovery_files)) }
-                if (scanProgress.active) Text("Scanning library · ${scanProgress.processed} files checked",
+                if (!mediaAccess) Text(stringResource(R.string.media_library_permission_explanation),
+                    style = MaterialTheme.typography.bodySmall, color = MutedBlue)
+                TextButton(onClick = onAttention) { Text(stringResource(R.string.needs_attention_recovery_files)) }
+                if (scanProgress.active || scanProgress.discovered > 0) Text(
+                    (if (scanProgress.active) stringResource(R.string.scanning) + " · " else "") +
+                        stringResource(R.string.scan_counts, scanProgress.discovered, scanProgress.inspected),
                     color = WarmGold, style = MaterialTheme.typography.bodySmall)
-                if (folder.isNotBlank()) {
+                if (folder.isNotBlank() || mediaAccess) {
                     Surface(color = CardBlue, shape = RoundedCornerShape(20.dp)) {
                         Row(Modifier.fillMaxWidth().padding(18.dp), horizontalArrangement = Arrangement.SpaceBetween) {
                             SummaryCount(tracks.count { it.inFilter(TrackFilter.REVIEW) }, "To review", WarmGold)
@@ -217,19 +230,21 @@ internal fun LibraryHome(
                             SummaryCount(tracks.count { it.inFilter(TrackFilter.IN_FILE) }, "In files", SeaGlass)
                         }
                     }
-                    Text(if (autoAdd) "Automatic writing is on. Review added lyrics for mistakes."
-                        else "Automatic writing is off. Review a result before adding it.",
-                        color = MutedBlue, style = MaterialTheme.typography.bodySmall)
-                    val next = tracks.firstOrNull { it.inFilter(TrackFilter.REVIEW) }
-                    if (next != null) OutlinedButton(onClick = { onOpen(next) }) { Text(stringResource(R.string.review_next)) }
-                    OutlinedButton(onClick = { confirmBulkWrite = true }, enabled = !busy) {
-                        Text(stringResource(R.string.write_all_high_confidence))
+                    if (folder.isNotBlank()) {
+                        Text(if (autoAdd) "Automatic writing is on. Review added lyrics for mistakes."
+                            else "Automatic writing is off. Review a result before adding it.",
+                            color = MutedBlue, style = MaterialTheme.typography.bodySmall)
+                        val next = tracks.firstOrNull { it.inFilter(TrackFilter.REVIEW) }
+                        if (next != null) OutlinedButton(onClick = { onOpen(next) }) { Text(stringResource(R.string.review_next)) }
+                        OutlinedButton(onClick = { confirmBulkWrite = true }, enabled = !busy) {
+                            Text(stringResource(R.string.write_all_high_confidence))
+                        }
                     }
                 }
                 if (message.isNotBlank()) MessageBanner(message, onClearMessage)
             }
         }
-        if (folder.isNotBlank()) {
+        if (folder.isNotBlank() || mediaAccess) {
             item {
                 OutlinedTextField(value = query, onValueChange = { query = it },
                     label = { Text(stringResource(R.string.search_title_artist_album_or_file)) },
@@ -271,11 +286,11 @@ internal fun LibraryHome(
             item {
                 Surface(color = CardBlue, shape = RoundedCornerShape(20.dp)) {
                     Column(Modifier.fillMaxWidth().padding(24.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(if (folder.isBlank()) "Start with your music folder"
+                        Text(if (folder.isBlank() && !mediaAccess) "Start with your music folder"
                             else if (tracks.isEmpty()) "No music scanned yet"
                             else stringResource(R.string.nothing_in_filter, stringResource(filter.titleRes).lowercase()),
                             style = MaterialTheme.typography.titleMedium)
-                        Text(if (folder.isBlank()) "Choose a folder to find lyrics already in your files and fetch missing ones."
+                        Text(if (folder.isBlank() && !mediaAccess) "Choose a folder to find lyrics already in your files and fetch missing ones."
                             else if (tracks.isEmpty()) "Tap Scan to look through the selected folder."
                             else "Choose another filter to see the rest of your music.", color = MutedBlue)
                     }
@@ -325,11 +340,13 @@ internal fun TrackRow(track: LocalTrack, selecting: Boolean, selected: Boolean, 
         if (raw.isNotBlank()) lyricsAsText(raw).lineSequence().firstOrNull { it.isNotBlank() }.orEmpty()
         else track.error.ifBlank { if (track.status == "new") "Waiting for a lyric result" else "Open for details" }
     }
-    Column(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(top = 5.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Column(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(top = 2.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 6.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+                ArtworkTile(track.title, Modifier.size(44.dp), track.uri)
+                Spacer(Modifier.width(10.dp))
                 if (selecting) Checkbox(checked = selected, onCheckedChange = { onClick() },
                     modifier = Modifier.semantics { contentDescription = "Select ${track.title}" })
                 Column(Modifier.weight(1f)) {
@@ -343,9 +360,7 @@ internal fun TrackRow(track: LocalTrack, selecting: Boolean, selected: Boolean, 
             }
             if (preview.isNotBlank()) Text(preview, color = PaleBlue.copy(alpha = 0.86f),
                 fontFamily = if (track.proposed.isNotBlank() || track.existing.isNotBlank()) FontFamily.Serif else FontFamily.Default,
-                fontSize = 16.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            if (track.source.isNotBlank()) Text("From ${track.source}", color = MutedBlue,
-                style = MaterialTheme.typography.labelMedium)
+                fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
         HorizontalDivider(color = MutedBlue.copy(alpha = 0.2f))
     }
