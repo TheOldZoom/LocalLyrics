@@ -3,7 +3,6 @@ name: Build Android APK
 on:
   push:
     branches: ['**']
-    tags: ['v*']
   pull_request:
   workflow_dispatch:
 
@@ -11,7 +10,7 @@ permissions:
   contents: read
 
 jobs:
-  build:
+  build_debug:
     runs-on: ubuntu-24.04
     steps:
       - name: Check out source
@@ -35,37 +34,149 @@ jobs:
       - name: Build debug APK
         run: ./gradlew --no-daemon :app:assembleDebug
 
-      - name: Upload APK
+      - name: Upload debug APK
         uses: actions/upload-artifact@v7
         with:
           name: lyrics-debug-apk
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
 
-  publish_debug:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
-    needs: build
+  publish_release:
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/master'
+    needs: build_debug
     runs-on: ubuntu-24.04
+    concurrency:
+      group: lyrics-release
+      cancel-in-progress: false
     permissions:
       contents: write
     steps:
-      - name: Download the built debug APK
-        uses: actions/download-artifact@v7
+      - name: Check out source and release tags
+        uses: actions/checkout@v7
         with:
-          name: lyrics-debug-apk
-          path: release-apk
+          fetch-depth: 0
 
-      - name: Publish debug GitHub prerelease
+      - name: Choose next version
+        id: version
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+        shell: bash
         run: |
-          test -f release-apk/app-debug.apk
-          tag="debug-${GITHUB_SHA:0:12}"
-          if ! gh release view "$tag" >/dev/null 2>&1; then
-            gh release create "$tag" release-apk/app-debug.apk \
+          set -euo pipefail
+          git fetch --tags origin master
+          if [[ "$(git rev-parse FETCH_HEAD)" != "$GITHUB_SHA" ]]; then
+            echo "A newer master commit exists; only the current head is released."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          latest=0
+          existing=""
+          while IFS= read -r tag; do
+            [[ "$tag" =~ ^v([1-9][0-9]*)\.0$ ]] || continue
+            number="${BASH_REMATCH[1]}"
+            if (( number > latest )); then latest="$number"; fi
+            if [[ "$(git rev-list -n 1 "$tag")" == "$GITHUB_SHA" ]]; then
+              existing="$tag"
+            fi
+          done < <(git tag --list)
+
+          if [[ -n "$existing" ]] &&
+            gh release view "$existing" --json isDraft,isPrerelease,assets |
+            jq -e --arg asset "Lyrics-${existing}.apk" \
+              '(.isDraft | not) and (.isPrerelease | not) and any(.assets[]; .name == $asset)' >/dev/null; then
+            echo "Release $existing already exists for this commit."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ -n "$existing" ]]; then
+            tag="$existing"
+            number="${tag#v}"
+            number="${number%.0}"
+          else
+            number=$((latest + 1))
+            tag="v${number}.0"
+          fi
+          code=$((1000000 + number))
+          if (( code > 2100000000 )); then
+            echo "Android versionCode limit reached" >&2
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          echo "Building $tag (Android versionCode $code)"
+
+      - name: Check signing secrets
+        if: steps.version.outputs.skip != 'true'
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -z "$KEYSTORE_BASE64" || -z "$KEYSTORE_PASSWORD" ]]; then
+            echo "Set ANDROID_KEYSTORE_BASE64 and ANDROID_KEYSTORE_PASSWORD repository secrets before publishing." >&2
+            exit 1
+          fi
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/lyrics-release.p12"
+          test -s "$RUNNER_TEMP/lyrics-release.p12"
+
+      - name: Set up JDK 17
+        if: steps.version.outputs.skip != 'true'
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Set up Android SDK
+        if: steps.version.outputs.skip != 'true'
+        uses: android-actions/setup-android@v4
+
+      - name: Install Android platform and build tools
+        if: steps.version.outputs.skip != 'true'
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Build signed release APK
+        if: steps.version.outputs.skip != 'true'
+        env:
+          ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/lyrics-release.p12
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          RELEASE_CODE: ${{ steps.version.outputs.code }}
+        run: ./gradlew --no-daemon :app:assembleRelease -PappVersionName="$RELEASE_TAG" -PappVersionCode="$RELEASE_CODE"
+
+      - name: Verify APK signature
+        if: steps.version.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          apk="app/build/outputs/apk/release/app-release.apk"
+          signer="$("$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs "$apk" |
+            sed -n 's/^Signer #1 certificate SHA-256 digest: //p')"
+          if [[ "$signer" != "cce6dd1fccf409d959857e0d7cdfa21b9da06b32203e8499af3f819b07776395" ]]; then
+            echo "APK signing certificate changed; this APK cannot update earlier signed releases." >&2
+            exit 1
+          fi
+
+      - name: Publish versioned GitHub release
+        if: steps.version.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk="app/build/outputs/apk/release/app-release.apk"
+          test -s "$apk"
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "$apk#Lyrics-${RELEASE_TAG}.apk" --clobber
+            gh release edit "$RELEASE_TAG" --draft=false --prerelease=false --latest
+          else
+            gh release create "$RELEASE_TAG" "$apk#Lyrics-${RELEASE_TAG}.apk" \
               --target "$GITHUB_SHA" \
-              --title "Lyrics debug ${tag}" \
-              --prerelease --latest=false \
-              --notes "Debug APK built from commit ${GITHUB_SHA}. The CI debug key can change between runs, so uninstall an older debug APK if an update is rejected."
+              --title "Lyrics $RELEASE_TAG" \
+              --latest \
+              --generate-notes
           fi

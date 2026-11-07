@@ -11,12 +11,15 @@ fun gitValue(vararg arguments: String): String? = runCatching {
     val output = process.inputStream.bufferedReader().readText().trim()
     if (process.waitFor() == 0) output else null
 }.getOrNull()
-val releaseTag = gitValue("describe", "--tags", "--abbrev=0", "--match", "v[0-9]*")
-    ?.removePrefix("v") ?: "0.1.0"
-// Every push has a distinct APK and must have a higher version code than the
-// previous push. CI fetches full Git history so this count is stable there.
-val releaseVersionCode = gitValue("rev-list", "--count", "HEAD")?.toIntOrNull()
-    ?.coerceAtLeast(1) ?: 1
+val releaseTag = gitValue("describe", "--tags", "--abbrev=0", "--match", "v[0-9]*") ?: "v0.1.0"
+// CI overrides these for signed releases. Local and branch debug builds retain
+// useful version metadata without needing signing secrets.
+val appVersionName = providers.gradleProperty("appVersionName").orNull
+    ?: "$releaseTag-build.${gitValue("rev-list", "--count", "HEAD") ?: "1"}"
+val appVersionCode = providers.gradleProperty("appVersionCode").orNull?.toInt()
+    ?: (gitValue("rev-list", "--count", "HEAD")?.toIntOrNull()?.coerceAtLeast(1) ?: 1)
+val keystorePath = providers.environmentVariable("ANDROID_KEYSTORE_PATH").orNull
+val keystorePassword = providers.environmentVariable("ANDROID_KEYSTORE_PASSWORD").orNull
 android {
     namespace = "com.music.lyricsapp"
     compileSdk = 36
@@ -25,11 +28,25 @@ android {
         minSdk = 26
         targetSdk = 36
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        versionCode = releaseVersionCode
-        versionName = "$releaseTag-build.$releaseVersionCode"
+        versionCode = appVersionCode
+        versionName = appVersionName
+    }
+    signingConfigs {
+        if (keystorePath != null && keystorePassword != null) {
+            create("ciRelease") {
+                storeFile = file(keystorePath)
+                storePassword = keystorePassword
+                keyAlias = "lyrics"
+                keyPassword = keystorePassword
+                storeType = "PKCS12"
+            }
+        }
     }
     buildTypes {
         getByName("release") {
+            if (keystorePath != null && keystorePassword != null) {
+                signingConfig = signingConfigs.getByName("ciRelease")
+            }
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")

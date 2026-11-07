@@ -12,7 +12,19 @@ Install Android SDK 36 and JDK 17, then run:
 
 Install `app/build/outputs/apk/debug/app-debug.apk` on a device running Android 8.0 or newer.
 
-GitHub Actions builds a debug APK on pushes and pull requests. Every push to `master` also publishes `app-debug.apk` as a GitHub prerelease tagged `debug-<commit SHA>`. No release keystore or signing secrets are used. Android signs debug APKs with a debug key; CI may use a different key on a later run, so an older debug APK may need to be uninstalled before installing the new one. Gradle uses the nearest `vMAJOR.MINOR.PATCH` tag in the version name and the full-history Git commit count as the increasing Android version code. The automation does not run the file-safety checks; review `docs/overhaul/manual-tests.md` before pushing to `master`.
+GitHub Actions builds a debug APK on pushes and pull requests. After a successful `master` build, it also creates a signed APK and a regular GitHub release with the next tag: `v1.0`, `v2.0`, and so on. You do not need to create tags. The release APK has that version name and an increasing Android version code. Download the APK from the new GitHub release and install it over the previous **signed release** APK to update the app.
+
+One-time signing setup:
+
+```sh
+./scripts/release-signing.sh generate
+gh auth login -h github.com
+./scripts/release-signing.sh upload
+```
+
+The key is stored locally in ignored `release-signing.p12`; its password is in ignored `key.properties`. Back up **both** securely and keep them for every future release. The upload command stores the key and password as GitHub Actions repository secrets. A previously installed debug APK has a different signing key and cannot be updated in place by the first signed release; uninstalling it erases its app data. Later APKs from these signed releases can update one another without uninstalling. The debug build artifact remains available for development, but use the signed release APK for updates.
+
+The workflow publishes regular releases but does not run the file-safety checks. Review `docs/overhaul/manual-tests.md` before distributing the app.
 
 ## Use
 
@@ -28,7 +40,7 @@ Under **Settings**, choose and reorder providers. A newly enabled provider is qu
 
 MP3, FLAC, M4A, audio MP4, and WebM can be tagged. AAC and Ogg/Opus remain visible but unsupported for writing pending file-preservation evidence. Writers stream audio payloads and inspect bounded metadata. A tagged file is written and its standard lyrics field verified before it replaces the original. The original is retained as a named backup, available through **Restore original** and **Needs attention**. If a folder provider cannot rename files, the tagged copy remains alongside the original. The app needs continuing access to the chosen folder, so keep its Android document permission.
 
-**Release status:** the automated GitHub publication is a debug prerelease. Required tests and manual file-safety checks have not been run, so it is not ready for a production release. See [overhaul summary](docs/overhaul/SUMMARY.md) for the exact gaps.
+**Release status:** required tests and manual file-safety checks have not been run. See [overhaul summary](docs/overhaul/SUMMARY.md) for the exact gaps.
 
 ## Legal and sources
 
