@@ -29,8 +29,11 @@ class LibraryUiTest {
                 LyricsAppTheme(LocalContext.current, ThemeChoice.LIGHT) {
                     Box(Modifier.width(360.dp)) {
                         LibraryHome(
-                            tracks = listOf(LocalTrack("", "song.mp3", "A Quiet Hour", "Northbound",
-                                "Night Maps", 212000, "1", "indexed", "", "", "", "", "")),
+                            tracks = listOf(
+                                LocalTrack("", "song.mp3", "A Quiet Hour", "Northbound",
+                                    "Night Maps", 212000, "1", "indexed", "", "", "", "", ""),
+                                LocalTrack("content://example/2", "day.mp3", "Daylight", "Northbound",
+                                    "Morning Maps", 183000, "1", "indexed", "", "", "", "", "")),
                             folder = "", autoAdd = false, mediaAccess = true,
                             scanProgress = LibrarySettings.ScanProgress(), filter = TrackFilter.ALL,
                             message = "", busy = false,
@@ -42,6 +45,7 @@ class LibraryUiTest {
             }
         }
         rule.onNodeWithText("Your albums").assertIsDisplayed()
+        rule.onNodeWithText("Morning Maps").performScrollTo().assertIsDisplayed()
         rule.onNodeWithText("Night Maps").performScrollTo().performClick()
         rule.onNodeWithText("A Quiet Hour").performScrollTo().assertIsDisplayed()
         val rootBounds = rule.onRoot().fetchSemanticsNode().boundsInRoot

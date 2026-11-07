@@ -14,6 +14,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -205,6 +206,7 @@ internal fun LibraryHome(
     onOpen: (LocalTrack) -> Unit, onMarkSelectedCorrect: (Set<String>) -> Unit,
     onWriteHighConfidence: () -> Unit, onClearMessage: () -> Unit,
 ) {
+    val openedAt = remember { android.os.SystemClock.elapsedRealtime() }
     var query by remember { mutableStateOf("") }
     var sort by remember { mutableStateOf(TrackSort.TITLE) }
     var sortMenu by remember { mutableStateOf(false) }
@@ -234,6 +236,10 @@ internal fun LibraryHome(
                 "${track.album.ifBlank { "\u0000" }.lowercase()}\u0001${track.artist.lowercase()}"
             }.toList().sortedBy { (_, songs) -> songs.first().album.ifBlank { "\uffff" }.lowercase() }
         }
+    }
+    LaunchedEffect(albums.isNotEmpty()) {
+        if (albums.isNotEmpty()) android.util.Log.i("LyricsScan",
+            "First cached album prepared in ${android.os.SystemClock.elapsedRealtime() - openedAt} ms")
     }
     val albumTracks = albums.firstOrNull { it.first == selectedAlbum }?.second.orEmpty()
     val settingsLabel = stringResource(R.string.ui_settings)
@@ -366,24 +372,12 @@ internal fun LibraryHome(
                 }
             }
         } else if (selectedAlbum == null && query.isBlank()) {
-            items(albums, key = { it.first }) { (key, songs) ->
-                val first = songs.first()
-                Surface(onClick = { selectedAlbum = key },
-                    color = MaterialTheme.colorScheme.surfaceContainer,
-                    shape = MaterialTheme.shapes.large) {
-                    Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                        ArtworkTile(first.album.ifBlank { first.artist }, Modifier.size(72.dp), first.uri)
-                        Spacer(Modifier.width(14.dp))
-                        Column(Modifier.weight(1f)) {
-                            Text(first.album.ifBlank { stringResource(R.string.unknown_album) },
-                                style = MaterialTheme.typography.titleMedium, maxLines = 2,
-                                overflow = TextOverflow.Ellipsis)
-                            Text(first.artist.ifBlank { stringResource(R.string.unknown_artist) },
-                                color = MutedBlue, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Text(stringResource(R.string.album_track_count, songs.size),
-                                style = MaterialTheme.typography.bodySmall, color = MutedBlue)
-                        }
+            items(albums.chunked(2), key = { it.first().first }) { pair ->
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    pair.forEach { (key, songs) ->
+                        AlbumCard(songs, Modifier.weight(1f)) { selectedAlbum = key }
                     }
+                    if (pair.size == 1) Spacer(Modifier.weight(1f))
                 }
             }
         } else {
@@ -414,6 +408,27 @@ internal fun SummaryCount(count: Int, label: String, color: Color) {
 }
 
 @Composable
+private fun AlbumCard(songs: List<LocalTrack>, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    val first = songs.first()
+    Surface(onClick = onClick, modifier = modifier, color = MaterialTheme.colorScheme.surfaceContainer,
+        shape = MaterialTheme.shapes.large) {
+        Column(Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            ArtworkTile(first.album.ifBlank { first.artist },
+                Modifier.fillMaxWidth().aspectRatio(1f), first.uri, first.signature)
+            Column(Modifier.padding(horizontal = 5.dp, vertical = 3.dp)) {
+                Text(first.album.ifBlank { stringResource(R.string.unknown_album) },
+                    style = MaterialTheme.typography.titleMedium, maxLines = 2,
+                    overflow = TextOverflow.Ellipsis)
+                Text(first.artist.ifBlank { stringResource(R.string.unknown_artist) },
+                    color = MutedBlue, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(stringResource(R.string.album_track_count, songs.size),
+                    style = MaterialTheme.typography.bodySmall, color = MutedBlue)
+            }
+        }
+    }
+}
+
+@Composable
 internal fun StatusPill(track: LocalTrack) {
     val (label, color) = track.displayStatus()
     Surface(color = color.copy(alpha = 0.16f), shape = RoundedCornerShape(50)) {
@@ -434,7 +449,7 @@ internal fun TrackRow(track: LocalTrack, selecting: Boolean, selected: Boolean, 
         Column(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 6.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
-                ArtworkTile(track.title, Modifier.size(44.dp), track.uri)
+                ArtworkTile(track.title, Modifier.size(44.dp), track.uri, track.signature)
                 Spacer(Modifier.width(10.dp))
                 if (selecting) Checkbox(checked = selected, onCheckedChange = { onClick() },
                     modifier = Modifier.semantics { contentDescription = "Select ${track.title}" })

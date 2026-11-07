@@ -150,7 +150,7 @@ internal fun TrackDetail(
             verticalArrangement = Arrangement.spacedBy(18.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                ArtworkTile(track.title, Modifier.size(104.dp), track.uri)
+                ArtworkTile(track.title, Modifier.size(104.dp), track.uri, track.signature)
                 Column(Modifier.weight(1f)) {
                     Text(track.title, fontSize = 29.sp, lineHeight = 34.sp, fontWeight = FontWeight.Bold)
                     Text(track.artist.ifBlank { "Unknown artist" }, color = MutedBlue, fontSize = 16.sp)

@@ -105,15 +105,17 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.flow.map
 import java.util.UUID
 
 @Composable
-internal fun ArtworkTile(title: String, modifier: Modifier = Modifier, audioUri: String = "") {
+internal fun ArtworkTile(title: String, modifier: Modifier = Modifier, audioUri: String = "",
+    signature: String = "") {
     val context = LocalContext.current
-    val artwork by produceState<Bitmap?>(initialValue = null, audioUri) {
-        value = if (audioUri.isBlank()) null else withContext(Dispatchers.IO) {
-            LocalArtwork.load(context, audioUri)
+    val artwork by produceState<Bitmap?>(initialValue = null, audioUri, signature) {
+        value = if (audioUri.isBlank()) null else artworkPermits.withPermit {
+            withContext(Dispatchers.IO) { LocalArtwork.load(context, audioUri, signature) }
         }
     }
     val colors = listOf(
@@ -137,35 +139,51 @@ internal fun ArtworkTile(title: String, modifier: Modifier = Modifier, audioUri:
 }
 
 private object LocalArtwork {
-    private val cache = object : LruCache<String, Bitmap>(8 * 1024 * 1024) {
+    private val cache = object : LruCache<String, Bitmap>(16 * 1024 * 1024) {
         override fun sizeOf(key: String, value: Bitmap): Int = value.byteCount
     }
     private val misses = mutableSetOf<String>()
+    private val locks = java.util.concurrent.ConcurrentHashMap<String, Any>()
 
-    fun load(context: Context, uri: String): Bitmap? {
-        synchronized(this) {
-            cache.get(uri)?.let { return it }
-            if (uri in misses) return null
+    fun load(context: Context, uri: String, signature: String): Bitmap? {
+        val key = "$uri|$signature"
+        val lock = locks.computeIfAbsent(key) { Any() }
+        try {
+            synchronized(lock) {
+                synchronized(this) {
+                    cache.get(key)?.let { return it }
+                    if (key in misses) return null
+                }
+                val bitmap = runCatching {
+                    val parsed = Uri.parse(uri)
+                    if (android.os.Build.VERSION.SDK_INT >= 29 && MediaLibrary.isIndexed(uri)) {
+                        runCatching { context.contentResolver.loadThumbnail(parsed,
+                            android.util.Size(160, 160), null) }.getOrNull()?.let { return@runCatching it }
+                    }
+                    val retriever = MediaMetadataRetriever()
+                    try {
+                        retriever.setDataSource(context, parsed)
+                        val bytes = retriever.embeddedPicture ?: return@runCatching null
+                        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+                        val sample = generateSequence(1) { it * 2 }
+                            .first { bounds.outWidth / it <= 160 && bounds.outHeight / it <= 160 }
+                        BitmapFactory.decodeByteArray(bytes, 0, bytes.size,
+                            BitmapFactory.Options().apply { inSampleSize = sample })
+                    } finally { retriever.release() }
+                }.getOrNull()
+                synchronized(this) {
+                    if (bitmap == null) misses += key else cache.put(key, bitmap)
+                }
+                return bitmap
+            }
+        } finally {
+            locks.remove(key, lock)
         }
-        val bitmap = runCatching {
-            val retriever = MediaMetadataRetriever()
-            try {
-                retriever.setDataSource(context, Uri.parse(uri))
-                val bytes = retriever.embeddedPicture ?: return@runCatching null
-                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-                val sample = generateSequence(1) { it * 2 }
-                    .first { bounds.outWidth / it <= 160 && bounds.outHeight / it <= 160 }
-                BitmapFactory.decodeByteArray(bytes, 0, bytes.size,
-                    BitmapFactory.Options().apply { inSampleSize = sample })
-            } finally { retriever.release() }
-        }.getOrNull()
-        synchronized(this) {
-            if (bitmap == null) misses += uri else cache.put(uri, bitmap)
-        }
-        return bitmap
     }
 }
+
+private val artworkPermits = kotlinx.coroutines.sync.Semaphore(2)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
