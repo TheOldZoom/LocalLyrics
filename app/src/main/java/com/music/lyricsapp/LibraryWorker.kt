@@ -3,6 +3,8 @@ package com.music.lyricsapp
 import android.content.Context
 import android.media.MediaMetadataRetriever
 import android.net.Uri
+import android.os.SystemClock
+import android.util.Log
 import androidx.documentfile.provider.DocumentFile
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
@@ -26,6 +28,9 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import java.util.concurrent.TimeUnit
 import java.util.Collections
@@ -104,7 +109,10 @@ object LibrarySettings {
 class LibraryWorker(context: Context, parameters: WorkerParameters) : CoroutineWorker(context, parameters) {
     companion object { private val scanMutex = Mutex() }
     private data class AudioTags(val title: String, val artist: String, val album: String, val durationMs: Long)
+    private data class Inspection(val uri: Uri, val name: String, val signature: String,
+        val extension: String, val supported: Boolean, val folderName: String)
     override suspend fun doWork(): Result = scanMutex.withLock { withContext(Dispatchers.IO) {
+        val scanStartedAt = SystemClock.elapsedRealtime()
         val context = applicationContext
         val store = LyricStore(context)
         LibrarySettings.scanProgress.value = LibrarySettings.ScanProgress(active = true)
@@ -120,6 +128,14 @@ class LibraryWorker(context: Context, parameters: WorkerParameters) : CoroutineW
             var discovered = 0
             var inspectedCount = 0
             var complete = true
+            val previous = store.scanStates(indexed = false)
+            val toInspect = mutableListOf<Inspection>()
+            val toDiscover = mutableListOf<Inspection>()
+            fun flushDiscovery() {
+                if (toDiscover.isEmpty()) return
+                store.scanBatch { toDiscover.forEach { store.discovered(it.uri.toString(), it.name, it.signature) } }
+                toDiscover.clear()
+            }
             suspend fun walk(folder: DocumentFile) {
                 if (!folder.canRead()) { complete = false; return }
                 for (child in folder.listFiles()) {
@@ -138,40 +154,56 @@ class LibraryWorker(context: Context, parameters: WorkerParameters) : CoroutineW
                     seen += uri
                     discovered++
                     val signature = "${child.length()}:${child.lastModified()}:$name"
-                    store.discovered(uri, name, signature)
+                    val old = previous[uri]
+                    val unchanged = old?.signature == signature &&
+                        old.status !in setOf("metadata_error", "discovered", "inspecting")
+                    if (!unchanged) {
+                        val task = Inspection(child.uri, name, signature, extension, supported,
+                            folder.name.orEmpty())
+                        toDiscover += task
+                        toInspect += task
+                        if (toDiscover.size == 64) flushDiscovery()
+                    } else inspectedCount++
                     if (discovered % 10 == 0) {
                         LibrarySettings.scanProgress.value = LibrarySettings.ScanProgress(discovered, inspectedCount, true)
                         setProgress(workDataOf("discovered" to discovered, "inspected" to inspectedCount))
                     }
-                    val prior = store.get(uri)
-                    if (prior?.signature == signature && prior.status !in setOf("metadata_error", "discovered", "inspecting")) {
-                        inspectedCount++
-                        continue
-                    }
-                    val tags = if (supported) metadata(context, child.uri, name, folder.name.orEmpty())
-                        else AudioTags(name.substringBeforeLast('.'), "", "", 0L)
-                    val inspected: kotlin.Result<String?> = if (supported) kotlin.runCatching {
-                        RawEmbeddedLyrics.read(context, child.uri, extension)
-                    } else kotlin.Result.success(null)
-                    if (inspected.isFailure) {
-                        store.scanned(LocalTrack(uri, name, tags.title, tags.artist, tags.album,
-                            tags.durationMs, signature, "metadata_error", "", "", "", "",
-                            "Could not safely inspect embedded lyrics: ${inspected.exceptionOrNull()?.message.orEmpty()}"))
-                        inspectedCount++
-                        continue
-                    }
-                    val existing = inspected.getOrNull().orEmpty()
-                    store.scanned(LocalTrack(uri, name, tags.title, tags.artist, tags.album, tags.durationMs,
-                        signature, if (!supported) "unsupported" else if (existing.isNotBlank()) "existing" else "new",
-                        "", "", "", existing, ""))
-                    inspectedCount++
                 }
             }
             walk(root)
+            val discoveryMs = SystemClock.elapsedRealtime() - scanStartedAt
+            flushDiscovery()
+            if (!complete || isStopped) return@withContext Result.retry()
+            // Bound open file descriptors and memory while allowing slow files to overlap.
+            for (batch in toInspect.chunked(32)) {
+                if (isStopped) return@withContext Result.retry()
+                val results = coroutineScope { batch.map { task -> async(Dispatchers.IO.limitedParallelism(2)) {
+                    val tags = if (task.supported) metadata(context, task.uri, task.name, task.folderName)
+                        else AudioTags(task.name.substringBeforeLast('.'), "", "", 0L)
+                    val inspected: kotlin.Result<String?> = if (task.supported) kotlin.runCatching {
+                        RawEmbeddedLyrics.read(context, task.uri, task.extension)
+                    } else kotlin.Result.success(null)
+                    if (inspected.isFailure) LocalTrack(task.uri.toString(), task.name, tags.title,
+                        tags.artist, tags.album, tags.durationMs, task.signature, "metadata_error", "", "", "", "",
+                        "Could not safely inspect embedded lyrics: ${inspected.exceptionOrNull()?.message.orEmpty()}")
+                    else {
+                        val existing = inspected.getOrNull().orEmpty()
+                        LocalTrack(task.uri.toString(), task.name, tags.title, tags.artist, tags.album,
+                            tags.durationMs, task.signature,
+                            if (!task.supported) "unsupported" else if (existing.isNotBlank()) "existing" else "new",
+                            "", "", "", existing, "")
+                    }
+                } }.awaitAll() }
+                store.scanBatch { results.forEach { store.scanned(it) } }
+                inspectedCount += results.size
+                LibrarySettings.scanProgress.value = LibrarySettings.ScanProgress(discovered, inspectedCount, true)
+                setProgress(workDataOf("discovered" to discovered, "inspected" to inspectedCount))
+            }
             LibrarySettings.scanProgress.value = LibrarySettings.ScanProgress(discovered, inspectedCount, true)
             setProgress(workDataOf("discovered" to discovered, "inspected" to inspectedCount))
             if (!complete || isStopped) return@withContext Result.retry()
-            store.removeMissing(seen)
+            store.scanBatch { store.removeMissing(seen) }
+            Log.i("LyricsScan", "SAF: $discovered files, ${toInspect.size} changed, discovery ${discoveryMs} ms, total ${SystemClock.elapsedRealtime() - scanStartedAt} ms")
             if (!inputData.getBoolean("lookup", true)) return@withContext Result.success()
             if (!LibrarySettings.privacyIntroSeen(context)) return@withContext Result.success()
             val sources = LibrarySettings.sources(context)

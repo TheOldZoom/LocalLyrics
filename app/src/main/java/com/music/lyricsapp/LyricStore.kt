@@ -28,7 +28,43 @@ data class ProviderCandidate(
 )
 
 class LyricStore(context: Context) : SQLiteOpenHelper(context, "lyrics.db", null, 6) {
-    private fun changed() { LyricsRoomDatabase.current()?.invalidationTracker?.refreshAsync() }
+    internal data class ScanState(val signature: String, val name: String, val status: String, val hasExisting: Boolean)
+
+    private var batching = false
+    private var batchDirty = false
+    private fun changed() {
+        if (batching) batchDirty = true
+        else LyricsRoomDatabase.current()?.invalidationTracker?.refreshAsync()
+    }
+
+    /** Keep each group of scan updates atomic and notify Room once per committed group. */
+    @Synchronized fun <T> scanBatch(block: () -> T): T {
+        check(!batching)
+        val db = writableDatabase
+        db.beginTransactionNonExclusive()
+        batching = true
+        batchDirty = false
+        var committed = false
+        try {
+            val result = block()
+            db.setTransactionSuccessful()
+            committed = true
+            return result
+        } finally {
+            db.endTransaction()
+            batching = false
+            if (committed && batchDirty) LyricsRoomDatabase.current()?.invalidationTracker?.refreshAsync()
+            batchDirty = false
+        }
+    }
+
+    @Synchronized internal fun scanStates(indexed: Boolean): Map<String, ScanState> = readableDatabase.rawQuery(
+        "SELECT uri, signature, name, status, existing != '' AS has_existing FROM tracks WHERE uri " +
+            if (indexed) "LIKE 'content://media/%'" else "NOT LIKE 'content://media/%'", null,
+    ).use { cursor -> buildMap {
+        while (cursor.moveToNext()) put(cursor.getString(0), ScanState(cursor.getString(1),
+            cursor.getString(2), cursor.getString(3), cursor.getInt(4) != 0))
+    } }
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL("""CREATE TABLE tracks (
             uri TEXT NOT NULL PRIMARY KEY, name TEXT NOT NULL, title TEXT NOT NULL,
@@ -268,12 +304,19 @@ class LyricStore(context: Context) : SQLiteOpenHelper(context, "lyrics.db", null
     }
 
     @Synchronized fun removeMissing(seen: Set<String>) {
-        all().filter { !MediaLibrary.isIndexed(it.uri) && it.uri !in seen }.forEach { delete(it.uri) }
+        missingUris(seen, indexed = false).forEach { delete(it) }
     }
 
     @Synchronized fun removeMissingIndexed(seen: Set<String>) {
-        all().filter { MediaLibrary.isIndexed(it.uri) && it.uri !in seen }.forEach { delete(it.uri) }
+        missingUris(seen, indexed = true).forEach { delete(it) }
     }
+
+    private fun missingUris(seen: Set<String>, indexed: Boolean): List<String> = readableDatabase.rawQuery(
+        "SELECT uri FROM tracks WHERE uri " +
+            if (indexed) "LIKE 'content://media/%'" else "NOT LIKE 'content://media/%'", null,
+    ).use { cursor -> buildList {
+        while (cursor.moveToNext()) cursor.getString(0).takeIf { it !in seen }?.let(::add)
+    } }
 
     @Synchronized fun all(): List<LocalTrack> = readableDatabase.query(
         "tracks", null, null, null, null, null, "name COLLATE NOCASE ASC",

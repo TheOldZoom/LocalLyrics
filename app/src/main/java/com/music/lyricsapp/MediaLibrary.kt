@@ -9,12 +9,15 @@ import android.os.Build
 import android.provider.MediaStore
 import android.provider.DocumentsContract
 import android.net.Uri
+import android.os.SystemClock
+import android.util.Log
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.flow.MutableStateFlow
 
 /** Indexes the platform's audio collection. A row URI, including its volume, is its identity. */
 internal object MediaLibrary {
     private val indexedPaths = ConcurrentHashMap<String, String>()
+    private var pathsReady = false
     val pathsRevision = MutableStateFlow(0)
     fun permission(): String = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_AUDIO
         else Manifest.permission.READ_EXTERNAL_STORAGE
@@ -38,9 +41,18 @@ internal object MediaLibrary {
     }
 
     suspend fun scan(context: Context, store: LyricStore, stopped: () -> Boolean = { false }) {
+        val startedAt = SystemClock.elapsedRealtime()
         if (!permitted(context)) {
             indexedPaths.clear()
+            pathsReady = false
             pathsRevision.value += 1
+            return
+        }
+        val checkpoint = generationCheckpoint(context)
+        val prefs = context.getSharedPreferences("media_scan_checkpoint", Context.MODE_PRIVATE)
+        // The path map is process-local, so the first scan must still build it after a restart.
+        if (pathsReady && checkpoint != null && checkpoint == prefs.getString("snapshot", null)) {
+            Log.i("LyricsScan", "MediaStore unchanged; skipped in ${SystemClock.elapsedRealtime() - startedAt} ms")
             return
         }
         val columns = mutableListOf(MediaStore.Audio.Media._ID, MediaStore.Audio.Media.DISPLAY_NAME,
@@ -51,6 +63,13 @@ internal object MediaLibrary {
         columns += MediaStore.Audio.Media.DATA // duplicate detection only; never used for writes
         val seen = HashSet<String>()
         val paths = HashMap<String, String>()
+        val previous = store.scanStates(indexed = true)
+        val pending = ArrayList<LocalTrack>(64)
+        fun flush() {
+            if (pending.isEmpty()) return
+            store.scanBatch { pending.forEach(store::scanned) }
+            pending.clear()
+        }
         // The external collection includes every mounted shared-storage volume. Never infer a
         // file path for writes; the path is only a best-effort duplicate hint for SAF rows.
         val selection = "${MediaStore.Audio.Media.IS_MUSIC} != 0"
@@ -62,6 +81,7 @@ internal object MediaLibrary {
             context.contentResolver.query(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI,
                 columns.toTypedArray(), selection, null, null)
         }
+        val queryMs = SystemClock.elapsedRealtime() - startedAt
         cursor?.use { cursor ->
             fun Cursor.string(column: String) = getString(getColumnIndexOrThrow(column)).orEmpty()
             fun Cursor.number(column: String) = getLong(getColumnIndexOrThrow(column))
@@ -80,26 +100,46 @@ internal object MediaLibrary {
                 if (pathColumn >= 0) cursor.getString(pathColumn)?.takeIf { it.isNotBlank() }
                     ?.let { paths[it] = identity }
                 val signature = "${cursor.number(MediaStore.Audio.Media.SIZE)}:${cursor.number(MediaStore.Audio.Media.DATE_MODIFIED)}:$name"
-                val previous = store.get(identity)
-                if (previous?.signature == signature && previous.status != "discovered") continue
+                val old = previous[identity]
+                if (old?.signature == signature && old.status != "discovered") continue
                 val title = cursor.string(MediaStore.Audio.Media.TITLE).takeUnless { it.isBlank() || it == "<unknown>" }
                     ?: name.substringBeforeLast('.')
                 val artist = cursor.string(MediaStore.Audio.Media.ARTIST).takeUnless { it == "<unknown>" }.orEmpty()
                 val album = cursor.string(MediaStore.Audio.Media.ALBUM).takeUnless { it == "<unknown>" }.orEmpty()
-                val existing = if (previous?.existing?.isNotBlank() == true &&
+                val existing = if (old?.hasExisting == true &&
                     name.substringAfterLast('.', "").lowercase() in setOf("mp3", "flac", "m4a", "mp4", "webm"))
                     runCatching {
                         RawEmbeddedLyrics.read(context, uri, name.substringAfterLast('.').lowercase())
                     }.getOrNull().orEmpty() else ""
-                store.scanned(LocalTrack(identity, name, title, artist, album,
+                pending += LocalTrack(identity, name, title, artist, album,
                     cursor.number(MediaStore.Audio.Media.DURATION), signature, "indexed", "", "", "",
-                    existing, ""))
+                    existing, "")
+                if (pending.size == 64) flush()
             }
         } ?: return
         if (!stopped()) {
+            flush()
             indexedPaths.clear(); indexedPaths.putAll(paths)
+            pathsReady = true
             pathsRevision.value += 1
-            store.removeMissingIndexed(seen)
+            store.scanBatch { store.removeMissingIndexed(seen) }
+            if (checkpoint != null) prefs.edit().putString("snapshot", checkpoint).apply()
+            Log.i("LyricsScan", "MediaStore: ${seen.size} files, query ${queryMs} ms, total ${SystemClock.elapsedRealtime() - startedAt} ms")
         }
+    }
+
+    private fun generationCheckpoint(context: Context): String? {
+        if (Build.VERSION.SDK_INT < 30) return null
+        return runCatching {
+            val volumes = MediaStore.getExternalVolumeNames(context).sorted()
+            org.json.JSONArray().apply {
+                volumes.forEach { volume ->
+                    val version = MediaStore.getVersion(context, volume)
+                    if (version.isNullOrBlank()) return null
+                    put(org.json.JSONArray().put(volume).put(version)
+                        .put(MediaStore.getGeneration(context, volume)))
+                }
+            }.toString()
+        }.getOrNull()
     }
 }
